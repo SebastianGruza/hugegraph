@@ -29,10 +29,12 @@ import org.apache.hugegraph.schema.VertexLabel;
 import org.apache.hugegraph.structure.HugeVertex;
 import org.apache.hugegraph.testutil.Assert;
 import org.apache.hugegraph.type.define.DataType;
+import org.apache.hugegraph.type.define.HugeKeys;
 import org.apache.tinkerpop.gremlin.process.traversal.P;
 import org.apache.tinkerpop.gremlin.process.traversal.Step;
 import org.apache.tinkerpop.gremlin.process.traversal.Traversal;
 import org.apache.tinkerpop.gremlin.process.traversal.TraversalStrategy;
+import org.apache.tinkerpop.gremlin.process.traversal.Traverser;
 import org.apache.tinkerpop.gremlin.process.traversal.dsl.graph.GraphTraversal;
 import org.apache.tinkerpop.gremlin.process.traversal.dsl.graph.__;
 import org.apache.tinkerpop.gremlin.process.traversal.step.TraversalParent;
@@ -539,6 +541,44 @@ public class TraversalUtilOptimizeTest {
     }
 
     @Test
+    public void testSearchPredicateDefaultCompatibility() throws Exception {
+        Assert.assertTrue(HugeGraph.class.getMethod("searchPredicate", String.class).isDefault());
+        HugeGraph graph = Mockito.mock(HugeGraph.class, Mockito.CALLS_REAL_METHODS);
+        Assert.assertThrows(UnsupportedOperationException.class, () -> graph.searchPredicate("word"));
+    }
+
+    @Test
+    public void testLocalContainsWithoutGraphAndAfterClone() {
+        Id key = IdGenerator.of(42L);
+        HugeGraph graph = Mockito.mock(HugeGraph.class);
+        Mockito.when(graph.propertyKey("age")).thenReturn(propertyKey(42L, "age", DataType.INT));
+        HugeVertex vertex = Mockito.mock(HugeVertex.class);
+        Mockito.when(vertex.graph()).thenReturn(graph);
+        Mockito.when(vertex.properties("key")).thenReturn(Collections.emptyIterator());
+        Mockito.when(vertex.properties("value")).thenReturn(Collections.emptyIterator());
+        Mockito.when(vertex.sysprop(HugeKeys.PROPERTIES))
+               .thenReturn(Collections.singletonMap(key, 20));
+        for (GraphTraversal<?, ?> query : new GraphTraversal<?, ?>[]{
+                __.V().hasKey("age").hasLabel(P.neq("other")),
+                __.V().hasValue(20).hasLabel(P.neq("other"))}) {
+            Traversal.Admin<?, ?> admin = query.asAdmin();
+            HugeGraphStep<?, ?> source = replaceGraphStep(admin);
+            TraversalUtil.extractHasContainer(source, admin);
+            @SuppressWarnings("unchecked")
+            HasStep<Vertex> filter = (HasStep<Vertex>) source.getNextStep();
+            @SuppressWarnings("unchecked")
+            Traverser.Admin<Vertex> traverser = Mockito.mock(Traverser.Admin.class);
+            Mockito.when(traverser.get()).thenReturn(vertex);
+            Mockito.when(traverser.bulk()).thenReturn(1L);
+            filter.addStart(traverser);
+            Assert.assertTrue(filter.hasNext());
+            HasStep<Vertex> clone = filter.clone();
+            clone.addStart(traverser);
+            Assert.assertTrue(clone.hasNext());
+        }
+    }
+
+    @Test
     public void testUnsafeLabelKeepsPointLookupPlan() {
         for (GraphTraversal<?, ?> query : new GraphTraversal<?, ?>[]{
                 __.V().hasId(1).limit(10).hasLabel(P.neq("other")),
@@ -571,6 +611,11 @@ public class TraversalUtilOptimizeTest {
         Mockito.when(graph.propertyKey("city")).thenReturn(propertyKey(2L, "city", DataType.TEXT));
         for (GraphTraversal<?, ?> query : new GraphTraversal<?, ?>[]{
                 __.V().has("city", "Beijing").out().hasLabel(P.neq("author")),
+                __.V().has("city", "Beijing").out().hasLabel(P.neq("author")).count(),
+                __.V().has("city", "Beijing").out().hasLabel(P.neq("author")).id(),
+                __.V().has("city", "Beijing").out().hasLabel(P.neq("author")).label(),
+                __.V().has("city", "Beijing").out().hasLabel(P.neq("author")).values("age").sum(),
+                __.V().has("city", "Beijing").out().where(__.not(__.hasLabel("author"))).count(),
                 __.V().has("city", "Beijing").out().where(__.not(__.hasLabel("author"))),
                 __.V().has("city", "Beijing").outE().inV().hasLabel(P.neq("author")),
                 __.V().has("city", "Beijing").properties().hasLabel(P.neq("author"))}) {

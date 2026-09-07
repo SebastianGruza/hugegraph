@@ -64,6 +64,7 @@ import org.apache.tinkerpop.gremlin.process.traversal.Order;
 import org.apache.tinkerpop.gremlin.process.traversal.P;
 import org.apache.tinkerpop.gremlin.process.traversal.Step;
 import org.apache.tinkerpop.gremlin.process.traversal.Traversal;
+import org.apache.tinkerpop.gremlin.process.traversal.Traverser;
 import org.apache.tinkerpop.gremlin.process.traversal.dsl.graph.GraphTraversal;
 import org.apache.tinkerpop.gremlin.process.traversal.step.HasContainerHolder;
 import org.apache.tinkerpop.gremlin.process.traversal.step.TraversalParent;
@@ -77,6 +78,8 @@ import org.apache.tinkerpop.gremlin.process.traversal.step.filter.TraversalFilte
 import org.apache.tinkerpop.gremlin.process.traversal.step.map.CountGlobalStep;
 import org.apache.tinkerpop.gremlin.process.traversal.step.map.EdgeVertexStep;
 import org.apache.tinkerpop.gremlin.process.traversal.step.map.GraphStep;
+import org.apache.tinkerpop.gremlin.process.traversal.step.map.IdStep;
+import org.apache.tinkerpop.gremlin.process.traversal.step.map.LabelStep;
 import org.apache.tinkerpop.gremlin.process.traversal.step.map.MatchStep;
 import org.apache.tinkerpop.gremlin.process.traversal.step.map.MaxGlobalStep;
 import org.apache.tinkerpop.gremlin.process.traversal.step.map.MeanGlobalStep;
@@ -84,6 +87,8 @@ import org.apache.tinkerpop.gremlin.process.traversal.step.map.MinGlobalStep;
 import org.apache.tinkerpop.gremlin.process.traversal.step.map.NoOpBarrierStep;
 import org.apache.tinkerpop.gremlin.process.traversal.step.map.OrderGlobalStep;
 import org.apache.tinkerpop.gremlin.process.traversal.step.map.PropertiesStep;
+import org.apache.tinkerpop.gremlin.process.traversal.step.map.PropertyKeyStep;
+import org.apache.tinkerpop.gremlin.process.traversal.step.map.PropertyValueStep;
 import org.apache.tinkerpop.gremlin.process.traversal.step.map.SumGlobalStep;
 import org.apache.tinkerpop.gremlin.process.traversal.step.map.VertexStep;
 import org.apache.tinkerpop.gremlin.process.traversal.step.sideEffect.IdentityStep;
@@ -704,8 +709,7 @@ public final class TraversalUtil {
                             continue;
                         }
                         holder.removeHasContainer(has);
-                        holder.addHasContainer(new HasContainer(has.getKey(),
-                                localIdPredicate(has.getPredicate())));
+                        holder.addHasContainer(new LocalIdHasContainer(has.getPredicate()));
                         continue;
                     }
                     if (T.label.getAccessor().equals(has.getKey())) {
@@ -713,7 +717,13 @@ public final class TraversalUtil {
                         holder.addHasContainer(new LocalLabelHasContainer(has.getPredicate()));
                         continue;
                     }
-                    if (isSysProp(has.getKey())) {
+                    if (keyForContainsKey(has.getKey()) || keyForContainsValue(has.getKey())) {
+                        // Backend CONTAINS support varies and source IDs use
+                        // local filtering too. Preserve HugeGraph's map query
+                        // semantics without treating "key"/"value" as names.
+                        holder.removeHasContainer(has);
+                        traversal.addStep(traversal.getSteps().indexOf(step),
+                                          new LocalContainsStep<>(traversal, has));
                         continue;
                     }
                     List<P<Object>> predicates = new ArrayList<>();
@@ -775,6 +785,43 @@ public final class TraversalUtil {
         return value;
     }
 
+    private static final class LocalIdHasContainer extends HasContainer {
+
+        private static final long serialVersionUID = 1L;
+
+        private LocalIdHasContainer(P<?> predicate) {
+            super(T.id.getAccessor(), localIdPredicate(predicate));
+        }
+
+        @Override
+        protected boolean testId(Element element) {
+            return testLocalIdPredicate(this.getPredicate(), element.id());
+        }
+    }
+
+    @SuppressWarnings("unchecked")
+    private static boolean testLocalIdPredicate(P<?> predicate, Object id) {
+        if (predicate instanceof ConnectiveP) {
+            boolean and = predicate instanceof AndP;
+            for (P<?> child : ((ConnectiveP<?>) predicate).getPredicates()) {
+                if (testLocalIdPredicate(child, id) != and) {
+                    return !and;
+                }
+            }
+            return and;
+        }
+        Object value = predicate.getValue();
+        Object first = value;
+        if (value instanceof Collection) {
+            Collection<?> values = (Collection<?>) value;
+            first = values.isEmpty() ? null : values.iterator().next();
+        }
+        // HasContainer decides string-ID comparison from only the top-level
+        // P value. ConnectiveP has no such value; decide separately per leaf.
+        Object actual = first instanceof String ? id.toString() : id;
+        return ((BiPredicate<Object, Object>) predicate.getBiPredicate()).test(actual, value);
+    }
+
     private static final class LocalLabelHasContainer extends HasContainer {
 
         private static final long serialVersionUID = 1L;
@@ -788,6 +835,38 @@ public final class TraversalUtil {
             // Resolve against the actual element, not a graph captured while
             // strategies run. Child traversals may be unbound or later cloned.
             return testLabelPredicate(this.getPredicate(), ((HugeElement) element).schemaLabel());
+        }
+    }
+
+    private static final class LocalContainsStep<S extends Element> extends HasStep<S> {
+
+        private static final long serialVersionUID = 1L;
+
+        private LocalContainsStep(Traversal.Admin<?, ?> traversal, HasContainer has) {
+            super(traversal, has.clone());
+            E.checkArgument(has.getPredicate().getBiPredicate() == Compare.eq,
+                            "CONTAINS query with relation '%s' is not supported",
+                            has.getPredicate().getBiPredicate());
+        }
+
+        @Override
+        protected boolean filter(Traverser.Admin<S> traverser) {
+            HugeElement element = (HugeElement) traverser.get();
+            // Adjacent vertices can be ID/label-only shells. Like properties(),
+            // load their properties before evaluating the system property map.
+            element.getFilledProperties();
+            // Keep a HasStep boundary so count/range cannot bypass this filter.
+            // Resolve schema from the runtime element; clone/reset must not
+            // retain a graph or transaction captured during optimization.
+            for (HasContainer has : this.getHasContainers()) {
+                boolean matches = keyForContainsKey(has.getKey()) || keyForContainsValue(has.getKey()) ?
+                                  convContains2Relation(element.graph(), has).test(element) :
+                                  has.test(element);
+                if (!matches) {
+                    return false;
+                }
+            }
+            return true;
         }
     }
 
@@ -903,7 +982,12 @@ public final class TraversalUtil {
                   step instanceof NoOpBarrierStep || step instanceof RangeGlobalStep ||
                   step instanceof IdentityStep || step instanceof NotStep ||
                   step instanceof AndStep || step instanceof OrStep ||
-                  step instanceof TraversalFilterStep)) {
+                  step instanceof TraversalFilterStep ||
+                  step instanceof IdStep || step instanceof LabelStep ||
+                  step instanceof PropertyKeyStep || step instanceof PropertyValueStep ||
+                  step instanceof CountGlobalStep || step instanceof SumGlobalStep ||
+                  step instanceof MinGlobalStep || step instanceof MaxGlobalStep ||
+                  step instanceof MeanGlobalStep)) {
                 return false;
             }
             if (step instanceof TraversalParent) {

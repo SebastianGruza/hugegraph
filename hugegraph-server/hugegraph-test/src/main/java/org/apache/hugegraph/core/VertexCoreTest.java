@@ -80,6 +80,7 @@ import org.apache.tinkerpop.gremlin.process.traversal.P;
 import org.apache.tinkerpop.gremlin.process.traversal.dsl.graph.GraphTraversal;
 import org.apache.tinkerpop.gremlin.process.traversal.dsl.graph.GraphTraversalSource;
 import org.apache.tinkerpop.gremlin.process.traversal.dsl.graph.__;
+import org.apache.tinkerpop.gremlin.structure.Edge;
 import org.apache.tinkerpop.gremlin.structure.T;
 import org.apache.tinkerpop.gremlin.structure.Vertex;
 import org.apache.tinkerpop.gremlin.structure.util.CloseableIterator;
@@ -9356,6 +9357,132 @@ public class VertexCoreTest extends BaseCoreTest {
                             .out().select("a").hasLabel(P.neq("target")).toList());
         Assert.assertEquals(ImmutableList.of(source), g.V().has("city", "Beijing")
                             .out().path().unfold().hasLabel(P.neq("target")).toList());
+    }
+
+    @Test
+    public void testLocalContainsBeforeNegativeLabel() {
+        HugeGraph graph = graph();
+        graph.schema().propertyKey("age").asInt().ifNotExist().create();
+        graph.schema().propertyKey("key").asText().ifNotExist().create();
+        graph.schema().propertyKey("value").asInt().ifNotExist().create();
+        graph.schema().vertexLabel("containsV").properties("age", "key", "value")
+             .nullableKeys("age", "key", "value").useAutomaticId().create();
+        graph.schema().edgeLabel("containsE").link("containsV", "containsV")
+             .properties("age", "key", "value").nullableKeys("age", "key", "value").create();
+        Vertex one = graph.addVertex(T.label, "containsV", "age", 20);
+        Vertex two = graph.addVertex(T.label, "containsV", "age", 30);
+        Vertex misleading = graph.addVertex(T.label, "containsV", "key", "age", "value", 99);
+        Edge first = one.addEdge("containsE", two, "age", 20);
+        Edge second = one.addEdge("containsE", misleading, "key", "age", "value", 99);
+        this.commitTx();
+        GraphTraversalSource g = graph.traversal();
+        Assert.assertEquals(ImmutableSet.of(one, two),
+                            g.V().hasKey("age").hasLabel(P.neq("other")).toSet());
+        Assert.assertEquals(ImmutableSet.of(one),
+                            g.V().hasValue(20).hasLabel(P.neq("other")).toSet());
+        Assert.assertEquals(ImmutableSet.of(one),
+                            g.V(one.id(), misleading.id()).hasKey("age")
+                             .hasLabel(P.neq("other")).toSet());
+        Assert.assertEquals(ImmutableSet.of(one),
+                            g.V().hasKey("age").hasId(one.id()).hasValue(20)
+                             .hasLabel(P.neq("other")).toSet());
+        Assert.assertEquals(ImmutableSet.of(two),
+                            g.V(one.id()).out().hasKey("age").hasLabel(P.neq("other")).toSet());
+        Assert.assertEquals(ImmutableSet.of(first),
+                            g.E().hasKey("age").hasLabel(P.neq("other")).toSet());
+        Assert.assertEquals(ImmutableSet.of(first),
+                            g.E().hasValue(20).hasLabel(P.neq("other")).toSet());
+        Assert.assertEquals(ImmutableSet.of(first),
+                            g.E(first.id(), second.id()).hasKey("age")
+                             .hasLabel(P.neq("other")).toSet());
+        Assert.assertEquals(ImmutableSet.of(first),
+                            g.V(one.id()).outE().hasKey("age").hasLabel(P.neq("other")).toSet());
+        Assert.assertEquals(ImmutableSet.of(first),
+                            g.V(one.id()).outE().hasValue(20).hasLabel(P.neq("other")).toSet());
+        Assert.assertTrue(g.V().hasValue(-1).hasLabel(P.neq("other")).toList().isEmpty());
+        Assert.assertTrue(g.V().hasKey("age").hasLabel(P.neq("containsV")).toList().isEmpty());
+        Assert.assertThrows(IllegalArgumentException.class, () ->
+                            g.V().hasKey("age", "key").hasLabel(P.neq("other")).toList());
+        Assert.assertThrows(IllegalArgumentException.class, () ->
+                            g.V().hasValue(20, 30).hasLabel(P.neq("other")).toList());
+        GraphTraversal.Admin<Vertex, Vertex> traversal = g.V().hasKey("age")
+                .hasLabel(P.neq("other")).asAdmin();
+        traversal.applyStrategies();
+        GraphTraversal.Admin<Vertex, Vertex> clone = traversal.clone();
+        Assert.assertEquals(ImmutableSet.of(one, two), traversal.toSet());
+        Assert.assertEquals(ImmutableSet.of(one, two), clone.toSet());
+        traversal.reset();
+        Assert.assertEquals(ImmutableSet.of(one, two), traversal.toSet());
+    }
+
+    @Test
+    public void testLocalConnectiveStringIds() {
+        HugeGraph graph = graph();
+        graph.schema().vertexLabel("stringV").useCustomizeStringId().create();
+        graph.schema().edgeLabel("stringE").link("stringV", "stringV").create();
+        Vertex one = graph.addVertex(T.label, "stringV", T.id, "a");
+        Vertex two = graph.addVertex(T.label, "stringV", T.id, "b");
+        Edge edge = one.addEdge("stringE", two);
+        this.commitTx();
+        GraphTraversalSource g = graph.traversal();
+        P<String> either = P.eq("a").or(P.eq("b"));
+        Assert.assertEquals(ImmutableSet.of(one), g.V().hasId("a").toSet());
+        Assert.assertEquals(ImmutableSet.of(two), g.V().hasId("b").toSet());
+        Assert.assertEquals(ImmutableSet.of(one, two),
+                            g.V().hasId(either).limit(10).hasLabel(P.neq("other")).toSet());
+        Assert.assertEquals(ImmutableSet.of(one),
+                            g.V().hasId(P.eq("a").and(P.neq("b")))
+                             .limit(10).hasLabel(P.neq("other")).toSet());
+        Assert.assertEquals(ImmutableSet.of(one),
+                            g.V(one.id()).hasId(either).hasLabel(P.neq("other")).toSet());
+        Assert.assertTrue(either.test("a"));
+        Assert.assertTrue(either.test("b"));
+        Assert.assertEquals(ImmutableSet.of(one),
+                            g.V().hasId(P.within("a", "b").and(P.neq("b")))
+                             .limit(10).hasLabel(P.neq("other")).toSet());
+        P<String> edgeIds = P.eq(edge.id().toString()).or(P.eq("missing"));
+        Assert.assertEquals(ImmutableSet.of(edge),
+                            g.E().hasId(edgeIds).hasLabel(P.neq("other")).toSet());
+        Assert.assertEquals(ImmutableSet.of(edge),
+                            g.V(one.id()).outE().hasId(edgeIds).hasLabel(P.neq("other")).toSet());
+        GraphTraversal.Admin<Vertex, Vertex> traversal = g.V().hasId(either)
+                .hasLabel(P.neq("other")).asAdmin();
+        traversal.applyStrategies();
+        GraphTraversal.Admin<Vertex, Vertex> clone = traversal.clone();
+        Assert.assertEquals(ImmutableSet.of(one, two), traversal.toSet());
+        Assert.assertEquals(ImmutableSet.of(one, two), clone.toSet());
+        traversal.reset();
+        Assert.assertEquals(ImmutableSet.of(one, two), traversal.toSet());
+    }
+
+    @Test
+    public void testRangeIndexAfterElementChangeWithTerminalSteps() {
+        HugeGraph graph = graph();
+        graph.schema().propertyKey("age").asInt().ifNotExist().create();
+        graph.schema().vertexLabel("indexed").properties("age").useAutomaticId().create();
+        graph.schema().vertexLabel("unindexed").properties("age").useAutomaticId().create();
+        graph.schema().vertexLabel("target").useAutomaticId().create();
+        graph.schema().indexLabel("byAge").onV("indexed").by("age").range().create();
+        graph.schema().edgeLabel("link").link("indexed", "target").create();
+        Vertex source = graph.addVertex(T.label, "indexed", "age", 60);
+        graph.addVertex(T.label, "unindexed", "age", 60);
+        Vertex target = graph.addVertex(T.label, "target");
+        source.addEdge("link", target);
+        this.commitTx();
+        GraphTraversalSource g = graph.traversal();
+        List<GraphTraversal<?, ?>> queries = ImmutableList.of(
+                g.V().has("age", P.gte(60)).out().hasLabel(P.neq("indexed")).count(),
+                g.V().has("age", P.gte(60)).out().where(__.not(__.hasLabel("indexed"))).count(),
+                g.V().has("age", P.gte(60)).out().hasLabel(P.neq("indexed")).id(),
+                g.V().has("age", P.gte(60)).out().hasLabel(P.neq("indexed")).label());
+        List<Object> expected = ImmutableList.of(1L, 1L, target.id(), "target");
+        for (int i = 0; i < queries.size(); i++) {
+            GraphTraversal<?, ?> query = queries.get(i);
+            query.asAdmin().applyStrategies();
+            HugeGraphStep<?, ?> step = (HugeGraphStep<?, ?>) query.asAdmin().getStartStep();
+            Assert.assertTrue(step.getHasContainers().stream().anyMatch(h -> h.getKey().equals("age")));
+            Assert.assertEquals(ImmutableList.of(expected.get(i)), query.toList());
+        }
     }
 
     @Test

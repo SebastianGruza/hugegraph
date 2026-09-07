@@ -291,7 +291,9 @@ public interface HugeGraph extends Graph {
     <K, V> V option(TypedOption<K, V> option);
 
     // Build the same term matcher used by SEARCH indexes, without reading data.
-    Predicate<Object> searchPredicate(String text);
+    default Predicate<Object> searchPredicate(String text) {
+        throw new UnsupportedOperationException("Local SEARCH matching is not supported by this graph");
+    }
 
     void registerRpcServices(RpcServiceConfig4Server serverConfig,
                              RpcServiceConfig4Client clientConfig);
