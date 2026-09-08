@@ -17,6 +17,10 @@
 
 package org.apache.hugegraph.traversal.optimize;
 
+import java.io.ByteArrayInputStream;
+import java.io.ByteArrayOutputStream;
+import java.io.ObjectInputStream;
+import java.io.ObjectOutputStream;
 import java.util.Collections;
 import java.util.Set;
 
@@ -45,9 +49,11 @@ import org.apache.tinkerpop.gremlin.process.traversal.step.map.GraphStep;
 import org.apache.tinkerpop.gremlin.process.traversal.step.map.VertexStep;
 import org.apache.tinkerpop.gremlin.process.traversal.step.util.HasContainer;
 import org.apache.tinkerpop.gremlin.process.traversal.strategy.optimization.InlineFilterStrategy;
+import org.apache.tinkerpop.gremlin.process.traversal.util.ConnectiveP;
 import org.apache.tinkerpop.gremlin.process.traversal.util.TraversalHelper;
 import org.apache.tinkerpop.gremlin.structure.T;
 import org.apache.tinkerpop.gremlin.structure.Vertex;
+import org.apache.tinkerpop.gremlin.structure.VertexProperty;
 import org.apache.tinkerpop.gremlin.structure.util.empty.EmptyGraph;
 import org.junit.Test;
 import org.mockito.Mockito;
@@ -521,6 +527,100 @@ public class TraversalUtilOptimizeTest {
         TraversalUtil.extractHasContainer(vertexStep, traversal);
         Assert.assertTrue(vertexStep.getHasContainers().isEmpty());
         Assert.assertSame(original, ((HasStep<?>) vertexStep.getNextStep()).getHasContainers().get(0));
+    }
+
+    @Test
+    public void testLocalSearchPreservesPredicateAndSerialization() throws Exception {
+        HugeGraph graph = Mockito.mock(HugeGraph.class);
+        Mockito.when(graph.searchPredicate("(alpha)")).thenReturn("alpha"::equals);
+        for (P<?> predicate : new P<?>[]{Text.contains("(alpha)"),
+                Text.contains("(alpha)").or(P.eq("beta")).and(P.neq("excluded"))}) {
+            Traversal.Admin<?, ?> traversal = traversal(
+                    __.V().has("body", predicate).limit(10).hasLabel(P.neq("other")), graph);
+            HugeGraphStep<?, ?> source = replaceGraphStep(traversal);
+            HasContainer original = ((HasStep<?>) source.getNextStep()).getHasContainers().get(0);
+            TraversalUtil.extractHasContainer(source, traversal);
+            HasContainer local = ((HasStep<?>) source.getNextStep()).getHasContainers().get(0);
+            Assert.assertEquals(predicate, local.getPredicate());
+            Assert.assertEquals(original.hashCode(), local.hashCode());
+            Assert.assertEquals(original.toString(), local.toString());
+            HasContainer restored = roundTrip(local);
+            Assert.assertTrue(restored.test(searchVertex(graph, "alpha")));
+            Assert.assertEquals(predicate instanceof ConnectiveP,
+                                restored.test(searchVertex(graph, "beta")));
+            Assert.assertFalse(restored.test(searchVertex(graph, "excluded")));
+            // A warmed matcher must not serialize its graph/analyzer closure.
+            restored = roundTrip(restored);
+            Assert.assertEquals(predicate, restored.getPredicate());
+            Assert.assertTrue(restored.test(searchVertex(graph, "alpha")));
+            Assert.assertTrue(restored.clone().test(searchVertex(graph, "alpha")));
+
+            HugeGraph otherGraph = Mockito.mock(HugeGraph.class);
+            Mockito.when(otherGraph.searchPredicate("(alpha)")).thenReturn("different"::equals);
+            Assert.assertFalse(restored.test(searchVertex(otherGraph, "alpha")));
+            Assert.assertTrue(restored.test(searchVertex(otherGraph, "different")));
+            Assert.assertTrue(restored.clone().test(searchVertex(graph, "alpha")));
+        }
+    }
+
+    private static HasContainer roundTrip(HasContainer container) throws Exception {
+        ByteArrayOutputStream bytes = new ByteArrayOutputStream();
+        try (ObjectOutputStream output = new ObjectOutputStream(bytes)) {
+            output.writeObject(container);
+        }
+        try (ObjectInputStream input = new ObjectInputStream(
+                new ByteArrayInputStream(bytes.toByteArray()))) {
+            return (HasContainer) input.readObject();
+        }
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    public void testLocalSearchMatcherTracksPredicateMutation() {
+        HugeGraph graph = Mockito.mock(HugeGraph.class);
+        Mockito.when(graph.searchPredicate("(alpha)")).thenReturn("alpha"::equals);
+        Mockito.when(graph.searchPredicate("(beta)")).thenReturn("beta"::equals);
+        Traversal.Admin<?, ?> traversal = traversal(
+                __.V().has("body", Text.contains("(alpha)"))
+                  .hasLabel(P.neq("other")), graph);
+        HugeGraphStep<?, ?> source = replaceGraphStep(traversal);
+        TraversalUtil.extractHasContainer(source, traversal);
+        HasContainer local = ((HasStep<?>) source.getNextStep()).getHasContainers().get(0);
+        Assert.assertTrue(local.test(searchVertex(graph, "alpha")));
+        Assert.assertTrue(local.test(searchVertex(graph, "alpha")));
+        Mockito.verify(graph, Mockito.times(1)).searchPredicate("(alpha)");
+        HasContainer clone = local.clone();
+        ((P<Object>) local.getPredicate()).setValue("(beta)");
+        Assert.assertFalse(local.test(searchVertex(graph, "alpha")));
+        Assert.assertTrue(local.test(searchVertex(graph, "beta")));
+        Assert.assertTrue(clone.test(searchVertex(graph, "alpha")));
+        Assert.assertFalse(clone.test(searchVertex(graph, "beta")));
+
+        traversal = traversal(__.V().has("body", Text.contains("(alpha)").or(P.eq("gamma")))
+                                   .hasLabel(P.neq("other")), graph);
+        source = replaceGraphStep(traversal);
+        TraversalUtil.extractHasContainer(source, traversal);
+        local = ((HasStep<?>) source.getNextStep()).getHasContainers().get(0);
+        Assert.assertTrue(local.test(searchVertex(graph, "alpha")));
+        ConnectiveP<Object> connective = (ConnectiveP<Object>) local.getPredicate();
+        connective.getPredicates().get(0).setValue("(beta)");
+        Assert.assertFalse(local.test(searchVertex(graph, "alpha")));
+        Assert.assertTrue(local.test(searchVertex(graph, "beta")));
+        Assert.assertTrue(local.test(searchVertex(graph, "gamma")));
+        connective.or(P.eq("delta"));
+        Assert.assertTrue(local.test(searchVertex(graph, "delta")));
+    }
+
+    @SuppressWarnings("unchecked")
+    private static Vertex searchVertex(HugeGraph graph, String value) {
+        Vertex vertex = Mockito.mock(Vertex.class);
+        VertexProperty<Object> property = Mockito.mock(VertexProperty.class);
+        Mockito.when(vertex.graph()).thenReturn(graph);
+        Mockito.when(vertex.properties("body"))
+               .thenAnswer(ignored -> Collections.singletonList(property).iterator());
+        Mockito.when(property.element()).thenReturn(vertex);
+        Mockito.when(property.value()).thenReturn(value);
+        return vertex;
     }
 
     @Test

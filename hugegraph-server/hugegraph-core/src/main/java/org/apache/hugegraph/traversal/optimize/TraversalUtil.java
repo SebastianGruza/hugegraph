@@ -23,6 +23,7 @@ import java.util.HashMap;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Optional;
 import java.util.UUID;
 import java.util.function.BiPredicate;
@@ -737,8 +738,8 @@ public final class TraversalUtil {
                             continue;
                         }
                         holder.removeHasContainer(has);
-                        holder.addHasContainer(new HasContainer(has.getKey(),
-                                localSearchPredicate(has.getPredicate(), graph)));
+                        holder.addHasContainer(new LocalSearchHasContainer(
+                                has.getKey(), has.getPredicate()));
                     }
                 }
                 if (holder.getHasContainers().isEmpty()) {
@@ -902,22 +903,88 @@ public final class TraversalUtil {
         return predicate.test(value instanceof Id ? label.id() : label.name(), value);
     }
 
-    private static P<?> localSearchPredicate(P<?> predicate, HugeGraph graph) {
-        if (predicate instanceof ConnectiveP) {
-            List<P<Object>> children = new ArrayList<>();
-            for (P<?> child : ((ConnectiveP<?>) predicate).getPredicates()) {
-                @SuppressWarnings("unchecked")
-                P<Object> converted = (P<Object>) localSearchPredicate(child, graph);
-                children.add(converted);
+    private static final class LocalSearchHasContainer extends HasContainer {
+
+        private static final long serialVersionUID = 1L;
+
+        private transient HugeGraph matcherGraph;
+        private transient P<?> matcherPredicate;
+        private transient Predicate<Object> matcher;
+
+        private LocalSearchHasContainer(String key, P<?> predicate) {
+            super(key, predicate.clone());
+        }
+
+        @Override
+        protected boolean testValue(Property property) {
+            // Keep the public P tree intact for strategies, hashing and Java
+            // serialization. Resolve the analyzer from the element's graph,
+            // including after cloning, deserialization or graph rebinding.
+            HugeGraph graph = (HugeGraph) property.element().graph();
+            if (this.matcherGraph != graph ||
+                !samePredicateValues(this.getPredicate(), this.matcherPredicate)) {
+                P<?> predicate = this.getPredicate().clone();
+                this.matcher = localSearchMatcher(predicate, graph);
+                this.matcherPredicate = predicate;
+                this.matcherGraph = graph;
             }
-            return predicate instanceof AndP ? new AndP<>(children) : new OrP<>(children);
+            return this.matcher.test(property.value());
+        }
+
+        @Override
+        public LocalSearchHasContainer clone() {
+            LocalSearchHasContainer clone = (LocalSearchHasContainer) super.clone();
+            clone.matcherGraph = null;
+            clone.matcherPredicate = null;
+            clone.matcher = null;
+            return clone;
+        }
+    }
+
+    private static boolean samePredicateValues(P<?> current, P<?> cached) {
+        // P.equals() compares originalValue, not the value changed by setValue().
+        if (cached == null || current.getClass() != cached.getClass()) {
+            return false;
+        }
+        if (current instanceof ConnectiveP) {
+            List<? extends P<?>> children = ((ConnectiveP<?>) current).getPredicates();
+            List<? extends P<?>> oldChildren = ((ConnectiveP<?>) cached).getPredicates();
+            if (children.size() != oldChildren.size()) {
+                return false;
+            }
+            for (int i = 0; i < children.size(); i++) {
+                if (!samePredicateValues(children.get(i), oldChildren.get(i))) {
+                    return false;
+                }
+            }
+            return true;
+        }
+        return current.getBiPredicate().equals(cached.getBiPredicate()) &&
+               Objects.equals(current.getValue(), cached.getValue());
+    }
+
+    @SuppressWarnings("unchecked")
+    private static Predicate<Object> localSearchMatcher(P<?> predicate, HugeGraph graph) {
+        if (predicate instanceof ConnectiveP) {
+            List<Predicate<Object>> children = new ArrayList<>();
+            for (P<?> child : ((ConnectiveP<?>) predicate).getPredicates()) {
+                children.add(localSearchMatcher(child, graph));
+            }
+            boolean and = predicate instanceof AndP;
+            return value -> {
+                for (Predicate<Object> child : children) {
+                    if (child.test(value) != and) {
+                        return !and;
+                    }
+                }
+                return and;
+            };
         }
         if (predicate.getBiPredicate() != Condition.RelationType.TEXT_CONTAINS) {
-            return predicate.clone();
+            return (P<Object>) predicate;
         }
         // Match SEARCH terms in place, preserving range and side-effect ordering.
-        Predicate<Object> matcher = graph.searchPredicate((String) predicate.getValue());
-        return new P<>((actual, ignored) -> matcher.test(actual), predicate.getValue());
+        return graph.searchPredicate((String) predicate.getValue());
     }
 
     private static boolean hasUnsafeLabelInTraversal(

@@ -9979,6 +9979,47 @@ public class VertexCoreTest extends BaseCoreTest {
     }
 
     @Test
+    public void testUnindexedPropertyBeforeNegativeLabel() {
+        HugeGraph graph = graph();
+        graph.schema().propertyKey("unindexedProp").asText().create();
+        graph.schema().vertexLabel("scanDoc").properties("unindexedProp")
+             .useAutomaticId().create();
+        graph.schema().vertexLabel("scanExcluded").properties("unindexedProp")
+             .useAutomaticId().create();
+        Vertex match = graph.addVertex(T.label, "scanDoc", "unindexedProp", "x");
+        graph.addVertex(T.label, "scanDoc", "unindexedProp", "y");
+        graph.addVertex(T.label, "scanExcluded", "unindexedProp", "x");
+        this.commitTx();
+        GraphTraversalSource g = graph.traversal();
+        Assert.assertThrows(NoIndexException.class,
+                            () -> g.V().has("unindexedProp", "x").toList());
+        Assert.assertEquals(ImmutableList.of(match.id()),
+                            g.V().has("unindexedProp", "x")
+                             .hasLabel(P.neq("scanExcluded")).id().toList());
+        Assert.assertEquals(Long.valueOf(1L), g.V().has("unindexedProp", "x")
+                .hasLabel(P.neq("scanExcluded")).count().next());
+        Assert.assertEquals(ImmutableList.of(match.id()),
+                            g.V(match.id()).has("unindexedProp", "x")
+                             .hasLabel(P.neq("scanExcluded")).id().toList());
+        long old = Query.defaultCapacity(1L);
+        try {
+            if ("rocksdb".equals(graph.backend())) {
+                // RocksDB's iterator counts candidates, not just final matches.
+                Assert.assertThrows(LimitExceedException.class,
+                                    () -> g.V().has("unindexedProp", "x")
+                                           .hasLabel(P.neq("scanExcluded")).toList());
+            } else if ("memory".equals(graph.backend())) {
+                // The test-only memory backend does not enforce scan capacity.
+                Assert.assertEquals(ImmutableList.of(match.id()),
+                                    g.V().has("unindexedProp", "x")
+                                     .hasLabel(P.neq("scanExcluded")).id().toList());
+            }
+        } finally {
+            Query.defaultCapacity(old);
+        }
+    }
+
+    @Test
     public void testSearchBeforeDownstreamNegativeLabel() {
         HugeGraph graph = graph();
         graph.schema().propertyKey("body").asText().create();
