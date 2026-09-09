@@ -19,6 +19,7 @@ package org.apache.hugegraph.traversal.optimize;
 
 import java.util.ArrayList;
 import java.util.Collection;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.Iterator;
 import java.util.List;
@@ -715,7 +716,18 @@ public final class TraversalUtil {
                     }
                     if (T.label.getAccessor().equals(has.getKey())) {
                         holder.removeHasContainer(has);
-                        holder.addHasContainer(new LocalLabelHasContainer(has.getPredicate()));
+                        HasContainer label = new LocalLabelHasContainer(has.getPredicate());
+                        if (source instanceof HugeGraphStep &&
+                            canPushPositiveLabel((HugeGraphStep<?, ?>) source, has)) {
+                            // A positive label conjunct uses the label index,
+                            // independent of per-label property index coverage.
+                            // Keep the runtime label matcher for source-ID queries.
+                            query.addHasContainer(label);
+                        } else {
+                            // Keep unsupported candidates and adjacent-vertex
+                            // labels local, including their paging boundary.
+                            holder.addHasContainer(label);
+                        }
                         continue;
                     }
                     if (keyForContainsKey(has.getKey()) || keyForContainsValue(has.getKey())) {
@@ -731,12 +743,8 @@ public final class TraversalUtil {
                     collectPredicates(predicates, ImmutableList.of(has.getPredicate()));
                     if (predicates.stream().anyMatch(p ->
                             p.getBiPredicate() == Condition.RelationType.TEXT_CONTAINS)) {
-                        HugeGraph graph = tryGetGraph(source);
-                        if (graph == null) {
-                            // Child traversals may not have a graph yet. Keep
-                            // their original local predicate in that case.
-                            continue;
-                        }
+                        // Child traversals can be unbound during optimization;
+                        // the matcher resolves the graph from each runtime element.
                         holder.removeHasContainer(has);
                         holder.addHasContainer(new LocalSearchHasContainer(
                                 has.getKey(), has.getPredicate()));
@@ -754,6 +762,60 @@ public final class TraversalUtil {
             // range extraction. Keep the range step to apply offset/limit after
             // those filters; a filtered page may contain fewer results.
             query.setRange(0, ((RangeGlobalStep<?>) step).getHighRange());
+        }
+    }
+
+    private static boolean canPushPositiveLabel(HugeGraphStep<?, ?> source,
+                                                HasContainer has) {
+        if (!isEqInLabelPredicate(has)) {
+            return false;
+        }
+        HugeGraph graph = tryGetGraph(source);
+        if (graph == null) {
+            return false;
+        }
+        List<P<Object>> predicates = new ArrayList<>();
+        collectPredicates(predicates, ImmutableList.of(has.getPredicate()));
+        for (P<Object> predicate : predicates) {
+            Object value = predicate.getValue();
+            BiPredicate<?, ?> bp = predicate.getBiPredicate();
+            if (bp == Contains.within && !(value instanceof Collection)) {
+                return false;
+            }
+            Collection<?> values = bp == Contains.within ?
+                                   (Collection<?>) value : Collections.singletonList(value);
+            for (Object candidate : values) {
+                if (!hasLabelIndex(graph, source.returnsVertex(), candidate)) {
+                    return false;
+                }
+            }
+        }
+        return true;
+    }
+
+    private static boolean hasLabelIndex(HugeGraph graph, boolean vertex, Object value) {
+        if (value instanceof Number) {
+            value = IdGenerator.of(((Number) value).longValue());
+        }
+        try {
+            SchemaLabel label;
+            if (value instanceof Id) {
+                Id id = (Id) value;
+                // Nonpositive IDs include internal schema objects that aren't
+                // user labels. Preserve their local matching behavior.
+                if (!id.number() || id.asLong() <= 0L) {
+                    return false;
+                }
+                label = vertex ? graph.vertexLabel(id) : graph.edgeLabel(id);
+            } else if (value instanceof String) {
+                label = vertex ? graph.vertexLabel((String) value) : graph.edgeLabel((String) value);
+            } else {
+                return false;
+            }
+            // Do not turn a working local filter into a missing-label/index error.
+            return label != null && label.enableLabelIndex();
+        } catch (IllegalArgumentException | NotFoundException e) {
+            return false;
         }
     }
 

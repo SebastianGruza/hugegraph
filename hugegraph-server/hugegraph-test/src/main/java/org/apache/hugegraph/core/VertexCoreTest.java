@@ -80,6 +80,9 @@ import org.apache.tinkerpop.gremlin.process.traversal.P;
 import org.apache.tinkerpop.gremlin.process.traversal.dsl.graph.GraphTraversal;
 import org.apache.tinkerpop.gremlin.process.traversal.dsl.graph.GraphTraversalSource;
 import org.apache.tinkerpop.gremlin.process.traversal.dsl.graph.__;
+import org.apache.tinkerpop.gremlin.process.traversal.step.filter.HasStep;
+import org.apache.tinkerpop.gremlin.process.traversal.step.map.GraphStep;
+import org.apache.tinkerpop.gremlin.process.traversal.step.util.HasContainer;
 import org.apache.tinkerpop.gremlin.structure.Edge;
 import org.apache.tinkerpop.gremlin.structure.T;
 import org.apache.tinkerpop.gremlin.structure.Vertex;
@@ -9979,6 +9982,72 @@ public class VertexCoreTest extends BaseCoreTest {
     }
 
     @Test
+    public void testPositiveLabelBeforeUnsafeChildUsesLabelQuery() {
+        HugeGraph graph = graph();
+        graph.schema().propertyKey("unindexedAge").asInt().create();
+        graph.schema().vertexLabel("sourceV").properties("unindexedAge")
+             .useAutomaticId().create();
+        graph.schema().vertexLabel("targetV").useAutomaticId().create();
+        graph.schema().vertexLabel("unrelatedV").useAutomaticId().create();
+        graph.schema().vertexLabel("withoutLabelIndex").useAutomaticId()
+             .enableLabelIndex(false).create();
+        graph.schema().edgeLabel("positiveLink").link("sourceV", "targetV").create();
+        Vertex source = graph.addVertex(T.label, "sourceV", "unindexedAge", 18);
+        Vertex target = graph.addVertex(T.label, "targetV");
+        Vertex unindexed = graph.addVertex(T.label, "withoutLabelIndex");
+        Edge edge = source.addEdge("positiveLink", target);
+        for (int i = 0; i < 5; i++) {
+            graph.addVertex(T.label, "unrelatedV");
+        }
+        this.commitTx();
+        GraphTraversalSource g = graph.traversal();
+        Id label = graph.vertexLabel("sourceV").id();
+        for (P<?> predicate : new P<?>[]{P.eq("sourceV"), P.eq(label), P.eq(label.asLong()),
+                P.within("sourceV", "targetV"), P.within(label, "sourceV")}) {
+            GraphTraversal<Vertex, Vertex> query = g.V().has(T.label, predicate)
+                    .has("unindexedAge", 18)
+                    .where(__.out().hasLabel(P.neq("sourceV")));
+            query.asAdmin().applyStrategies();
+            HugeGraphStep<?, ?> step = (HugeGraphStep<?, ?>) query.asAdmin().getStartStep();
+            Assert.assertEquals(1, step.getHasContainers().size());
+            Assert.assertEquals(T.label.getAccessor(), step.getHasContainers().get(0).getKey());
+            Assert.assertEquals(ImmutableList.of(source), query.toList());
+            Assert.assertEquals(ImmutableList.of(source), g.V(source.id(), target.id())
+                    .has(T.label, predicate).where(__.out().hasLabel(P.neq("sourceV"))).toList());
+        }
+        Assert.assertEquals(Long.valueOf(1L), g.V().hasLabel("sourceV")
+                .where(__.out().hasLabel(P.neq("sourceV"))).count().next());
+        Assert.assertTrue(g.V().hasLabel(P.within(Collections.emptyList()))
+                           .where(__.out().hasLabel(P.neq("sourceV"))).toList().isEmpty());
+        Assert.assertTrue(g.V().hasLabel("sourceV").hasLabel("targetV")
+                           .where(__.out().hasLabel(P.neq("sourceV"))).toList().isEmpty());
+        Assert.assertEquals(ImmutableList.of(source), g.V().hasLabel(P.within("sourceV", "missing"))
+                .where(__.out().hasLabel(P.neq("sourceV"))).toList());
+        Assert.assertTrue(g.V().hasLabel("missing").hasLabel(P.neq("sourceV")).toList().isEmpty());
+        Assert.assertEquals(ImmutableList.of(unindexed), g.V().hasLabel("withoutLabelIndex")
+                .hasLabel(P.neq("sourceV")).toList());
+        Assert.assertEquals(ImmutableList.of(target), g.V(source.id()).out().hasLabel("targetV")
+                .hasLabel(P.neq("sourceV")).toList());
+        Assert.assertEquals(ImmutableList.of(target), g.V(source.id()).out().has(T.label,
+                graph.vertexLabel("targetV").id()).hasLabel(P.neq("sourceV")).toList());
+        Id edgeLabel = graph.edgeLabel("positiveLink").id();
+        Assert.assertEquals(ImmutableList.of(edge), g.E().has(T.label, edgeLabel)
+                .limit(10).hasLabel(P.neq("other")).toList());
+        Assert.assertEquals(ImmutableList.of(edge), g.E(edge.id()).has(T.label, edgeLabel)
+                .hasLabel(P.neq("other")).toList());
+        // A selective label query must not consume unrelated vertices' capacity.
+        if ("rocksdb".equals(graph.backend())) {
+            long old = Query.defaultCapacity(3L);
+            try {
+                Assert.assertEquals(ImmutableList.of(source), g.V().hasLabel("sourceV")
+                        .where(__.out().hasLabel(P.neq("sourceV"))).toList());
+            } finally {
+                Query.defaultCapacity(old);
+            }
+        }
+    }
+
+    @Test
     public void testUnindexedPropertyBeforeNegativeLabel() {
         HugeGraph graph = graph();
         graph.schema().propertyKey("unindexedProp").asText().create();
@@ -10016,6 +10085,31 @@ public class VertexCoreTest extends BaseCoreTest {
             }
         } finally {
             Query.defaultCapacity(old);
+        }
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    public void testUnboundLocalSearchUsesGraphAnalyzer() {
+        HugeGraph graph = graph();
+        graph.schema().propertyKey("body").asText().create();
+        graph.schema().vertexLabel("runtimeDoc").properties("body").useAutomaticId().create();
+        Vertex alpha = graph.addVertex(T.label, "runtimeDoc", "body", "alpha");
+        Vertex alphabet = graph.addVertex(T.label, "runtimeDoc", "body", "alphabet");
+        this.commitTx();
+        for (P<?> predicate : new P<?>[]{Text.contains("(alpha)"),
+                Text.contains("(alpha)").or(P.eq("beta")).and(P.neq("excluded"))}) {
+            GraphTraversal.Admin<Object, Vertex> traversal = __.V().has("body", predicate)
+                    .limit(10).hasLabel(P.neq("other")).asAdmin();
+            HugeGraphStep<?, ?> source = new HugeGraphStep<>(
+                    (GraphStep<Object, Vertex>) traversal.getStartStep());
+            traversal.removeStep(0);
+            traversal.addStep(0, source);
+            TraversalUtil.extractHasContainer(source, traversal);
+            HasContainer local = ((HasStep<?>) source.getNextStep()).getHasContainers().get(0);
+            Assert.assertTrue(local.test(alpha));
+            Assert.assertFalse(local.test(alphabet));
+            Assert.assertTrue(local.clone().test(alpha));
         }
     }
 
