@@ -22,13 +22,18 @@ import static org.apache.hugegraph.store.client.util.HgStoreClientConst.NODE_MAX
 import static org.apache.hugegraph.store.client.util.HgStoreClientConst.TX_SESSIONS_MAP_CAPACITY;
 
 import java.util.Collection;
+import java.util.Collections;
 import java.util.HashMap;
+import java.util.IdentityHashMap;
+import java.util.Iterator;
 import java.util.LinkedList;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Queue;
+import java.util.Set;
+import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Function;
 import java.util.function.Supplier;
 import java.util.stream.Collector;
@@ -131,35 +136,7 @@ final class NodeTxExecutor {
                 if (!allSuccess.get()) {
                     throw HgStoreClientException.of(msg);
                 }
-                AtomicReference<Throwable> throwable = new AtomicReference<>();
-                Collection<HgStoreSession> sessions = this.sessions.values();
-                sessions.parallelStream().forEach(e -> {
-                    if (e.isTx()) {
-                        try {
-                            e.commit();
-                        } catch (Throwable t) {
-                            throwable.compareAndSet(null, t);
-                            allSuccess.set(false);
-                        }
-                    }
-                });
-                if (!allSuccess.get()) {
-                    if (isTx) {
-                        try {
-                            sessions.stream().forEach(HgStoreSession::rollback);
-                        } catch (Exception e) {
-
-                        }
-                    }
-                    Throwable cause = throwable.get();
-                    if (cause.getCause() != null) {
-                        cause = cause.getCause();
-                    }
-                    if (cause instanceof HgStoreClientException) {
-                        throw (HgStoreClientException) cause;
-                    }
-                    throw HgStoreClientException.of(cause);
-                }
+                this.commitSessions(this.sessions.values());
                 return true;
             });
 
@@ -233,6 +210,52 @@ final class NodeTxExecutor {
     //        }
     //    }
     // };
+
+    /**
+     * Commit every tx session in parallel. When at least one commit fails, roll back (in tx
+     * mode) and throw one exception that carries ALL failures: the first one as the cause, the
+     * others as suppressed. The retry loop looks at all of them, so whether a commit is retried
+     * no longer depends on which partition happened to fail first.
+     */
+    void commitSessions(Collection<HgStoreSession> sessions) {
+        Queue<Throwable> failures = new ConcurrentLinkedQueue<>();
+        sessions.parallelStream().forEach(e -> {
+            if (e.isTx()) {
+                try {
+                    e.commit();
+                } catch (Throwable t) {
+                    failures.add(t);
+                }
+            }
+        });
+        if (failures.isEmpty()) {
+            return;
+        }
+        if (isTx) {
+            try {
+                sessions.stream().forEach(HgStoreSession::rollback);
+            } catch (Exception e) {
+                // keep the commit failure as the reported one
+            }
+        }
+        throw aggregate(failures);
+    }
+
+    static HgStoreClientException aggregate(Collection<Throwable> failures) {
+        Iterator<Throwable> it = failures.iterator();
+        Throwable first = it.next();
+        Throwable cause = first.getCause() != null ? first.getCause() : first;
+        HgStoreClientException result = cause instanceof HgStoreClientException ?
+                                        (HgStoreClientException) cause :
+                                        HgStoreClientException.of(cause);
+        while (it.hasNext()) {
+            Throwable other = it.next();
+            if (other != result && other != cause) {
+                result.addSuppressed(other);
+            }
+        }
+        return result;
+    }
 
     private boolean doAction(HgTriple<String, HgOwnerKey, Object> nodeParams,
                              Function<NodeTkv, Boolean> action) {
@@ -389,17 +412,17 @@ final class NodeTxExecutor {
                                     try {
                                         buffer = supplier.get();
                                     } catch (Throwable t) {
-                                        if (i + 1 > NODE_MAX_RETRYING_TIMES) {
-                                            log.error(maxTryMsg, t);
-                                            throw HgStoreClientException.of(
-                                                    t.getMessage(), t);
-                                        }
                                         if (!isRetryable(t)) {
                                             // A deadline or a cancellation will not
                                             // get better by waiting the full deadline
                                             // again; fail fast and let the caller decide.
                                             log.warn("Not retrying after: {}",
-                                                     t.getMessage());
+                                                     t.getMessage(), t);
+                                            throw HgStoreClientException.of(
+                                                    t.getMessage(), t);
+                                        }
+                                        if (i + 1 > NODE_MAX_RETRYING_TIMES) {
+                                            log.error(maxTryMsg, t);
                                             throw HgStoreClientException.of(
                                                     t.getMessage(), t);
                                         }
@@ -428,11 +451,16 @@ final class NodeTxExecutor {
     /**
      * Retry only failures that a fresh attempt can plausibly fix (a transport error, a
      * leader change). A DEADLINE_EXCEEDED would wait the full deadline again, a CANCELLED
-     * means the caller's thread was interrupted; neither is retried.
+     * means the caller's thread was interrupted; neither is retried, also when it is one of
+     * several failures of a parallel commit.
      */
     static boolean isRetryable(Throwable t) {
+        return isRetryable(t, Collections.newSetFromMap(new IdentityHashMap<>()));
+    }
+
+    private static boolean isRetryable(Throwable t, Set<Throwable> seen) {
         Throwable c = t;
-        while (c != null) {
+        while (c != null && seen.add(c)) {
             if (c instanceof InterruptedException) {
                 return false;
             }
@@ -442,8 +470,12 @@ final class NodeTxExecutor {
                     return false;
                 }
             }
-            if (c.getCause() == c) {
-                break;
+            // A parallel commit reports the other partitions' failures as suppressed;
+            // one non-retryable failure among them makes the whole attempt non-retryable.
+            for (Throwable suppressed : c.getSuppressed()) {
+                if (!isRetryable(suppressed, seen)) {
+                    return false;
+                }
             }
             c = c.getCause();
         }

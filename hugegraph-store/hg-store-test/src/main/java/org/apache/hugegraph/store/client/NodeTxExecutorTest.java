@@ -27,6 +27,8 @@ import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
+import java.util.Arrays;
+import java.util.List;
 import java.util.Optional;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
@@ -40,7 +42,6 @@ import org.apache.hugegraph.store.client.type.HgStoreClientException;
 import org.junit.Test;
 
 import io.grpc.Status;
-import io.grpc.StatusRuntimeException;
 
 public class NodeTxExecutorTest {
 
@@ -131,7 +132,13 @@ public class NodeTxExecutorTest {
         assertFalse(NodeTxExecutor.isRetryable(new InterruptedException("interrupted")));
         // The status is usually wrapped by the time it reaches the retry loop
         assertFalse(NodeTxExecutor.isRetryable(HgStoreClientException.of(
-                "commit failed", new RuntimeException(Status.DEADLINE_EXCEEDED.asRuntimeException()))));
+                "commit failed",
+                new RuntimeException(Status.DEADLINE_EXCEEDED.asRuntimeException()))));
+        // one non-retryable failure among the suppressed ones decides
+        HgStoreClientException mixed = HgStoreClientException.of(
+                Status.UNAVAILABLE.asRuntimeException());
+        mixed.addSuppressed(Status.DEADLINE_EXCEEDED.asRuntimeException());
+        assertFalse(NodeTxExecutor.isRetryable(mixed));
         assertTrue(NodeTxExecutor.isRetryable(Status.UNAVAILABLE.asRuntimeException()));
         assertTrue(NodeTxExecutor.isRetryable(new RuntimeException("simulated transport failure")));
     }
@@ -185,5 +192,79 @@ public class NodeTxExecutorTest {
         });
         assertEquals("ok", result.get());
         assertEquals(2, attempts.get());
+    }
+
+    @Test
+    public void testInterruptBeforeCallSkipsTheAttempt() {
+        // restserver.request_timeout expired between two store calls of one request
+        NodeTxExecutor executor = NodeTxExecutor.graphOf("graph", null);
+        AtomicInteger attempts = new AtomicInteger();
+        try {
+            Thread.currentThread().interrupt();
+            assertThrows(HgStoreClientException.class, () ->
+                    executor.retryingInvoke(() -> {
+                        attempts.incrementAndGet();
+                        return "ok";
+                    }));
+            assertEquals(0, attempts.get());
+            assertTrue(Thread.currentThread().isInterrupted());
+        } finally {
+            Thread.interrupted();
+        }
+    }
+
+    @Test
+    public void testMixedCommitFailuresAreNotRetried() {
+        // One partition on a store being replaced (UNAVAILABLE, retryable), one on a stalled
+        // store (DEADLINE_EXCEEDED). Whichever finishes first, the commit must not be retried.
+        HgStoreSession unavailable = mock(HgStoreSession.class);
+        HgStoreSession stalled = mock(HgStoreSession.class);
+        when(unavailable.isTx()).thenReturn(true);
+        when(stalled.isTx()).thenReturn(true);
+        // fresh exceptions on every attempt, as the real gRPC calls produce them
+        org.mockito.Mockito.doAnswer(i -> {
+            throw new RuntimeException(HgStoreClientException.of(
+                    "commit", Status.UNAVAILABLE.asRuntimeException()));
+        }).when(unavailable).commit();
+        org.mockito.Mockito.doAnswer(i -> {
+            throw new RuntimeException(HgStoreClientException.of(
+                    "commit", Status.DEADLINE_EXCEEDED.asRuntimeException()));
+        }).when(stalled).commit();
+        List<HgStoreSession> sessions = Arrays.asList(unavailable, stalled);
+
+        NodeTxExecutor executor = NodeTxExecutor.graphOf("graph", null);
+        executor.setTx(true);
+        HgStoreClientException e = assertThrows(HgStoreClientException.class,
+                                                () -> executor.commitSessions(sessions));
+        assertEquals(1, e.getSuppressed().length);
+        assertFalse(NodeTxExecutor.isRetryable(e));
+        verify(unavailable).rollback();
+        verify(stalled).rollback();
+
+        AtomicInteger attempts = new AtomicInteger();
+        assertThrows(HgStoreClientException.class, () ->
+                executor.retryingInvoke(() -> {
+                    attempts.incrementAndGet();
+                    executor.commitSessions(sessions);
+                    return true;
+                }));
+        assertEquals(1, attempts.get());
+    }
+
+    @Test
+    public void testAllRetryableCommitFailuresAreRetried() {
+        HgStoreSession a = mock(HgStoreSession.class);
+        HgStoreSession b = mock(HgStoreSession.class);
+        when(a.isTx()).thenReturn(true);
+        when(b.isTx()).thenReturn(true);
+        org.mockito.Mockito.doThrow(new RuntimeException(Status.UNAVAILABLE.asRuntimeException()))
+                .when(a).commit();
+        org.mockito.Mockito.doThrow(new RuntimeException(Status.UNAVAILABLE.asRuntimeException()))
+                .when(b).commit();
+        NodeTxExecutor executor = NodeTxExecutor.graphOf("graph", null);
+        HgStoreClientException e = assertThrows(HgStoreClientException.class,
+                                                () -> executor.commitSessions(Arrays.asList(a, b)));
+        assertEquals(1, e.getSuppressed().length);
+        assertTrue(NodeTxExecutor.isRetryable(e));
     }
 }
