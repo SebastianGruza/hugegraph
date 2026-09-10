@@ -46,6 +46,8 @@ import org.apache.hugegraph.store.client.util.HgStoreClientConst;
 import org.apache.hugegraph.store.term.HgPair;
 import org.apache.hugegraph.store.term.HgTriple;
 
+import io.grpc.Status;
+import io.grpc.StatusRuntimeException;
 import lombok.extern.slf4j.Slf4j;
 
 /**
@@ -376,30 +378,42 @@ final class NodeTxExecutor {
         return IntStream.rangeClosed(0, NODE_MAX_RETRYING_TIMES).boxed()
                         .map(
                                 i -> {
+                                    if (Thread.currentThread().isInterrupted()) {
+                                        // The caller (e.g. a REST worker hitting
+                                        // restserver.request_timeout) gave up: stop
+                                        // retrying instead of holding its thread.
+                                        throw HgStoreClientException.of(
+                                                "Interrupted before retry " + i);
+                                    }
                                     T buffer = null;
                                     try {
                                         buffer = supplier.get();
                                     } catch (Throwable t) {
-                                        if (i + 1 <= NODE_MAX_RETRYING_TIMES) {
-                                            try {
-                                                int sleepTime;
-                                                // The first three times try once every second
-                                                if (i < 3) {
-                                                    sleepTime = 1;
-                                                } else {
-                                                    // Subsequent incremental
-                                                    sleepTime = i - 1;
-                                                }
-                                                log.info("Waiting {} seconds " +
-                                                         "for the next try.",
-                                                         sleepTime);
-                                                Thread.sleep(sleepTime * 1000L);
-                                            } catch (InterruptedException e) {
-                                                log.error("Failed to sleep", e);
-                                            }
-                                        } else {
+                                        if (i + 1 > NODE_MAX_RETRYING_TIMES) {
                                             log.error(maxTryMsg, t);
                                             throw HgStoreClientException.of(
+                                                    t.getMessage(), t);
+                                        }
+                                        if (!isRetryable(t)) {
+                                            // A deadline or a cancellation will not
+                                            // get better by waiting the full deadline
+                                            // again; fail fast and let the caller decide.
+                                            log.warn("Not retrying after: {}",
+                                                     t.getMessage());
+                                            throw HgStoreClientException.of(
+                                                    t.getMessage(), t);
+                                        }
+                                        // The first three times try once every second,
+                                        // subsequent incremental
+                                        int sleepTime = i < 3 ? 1 : i - 1;
+                                        log.info("Waiting {} seconds for the next try.",
+                                                 sleepTime);
+                                        try {
+                                            Thread.sleep(sleepTime * 1000L);
+                                        } catch (InterruptedException e) {
+                                            Thread.currentThread().interrupt();
+                                            throw HgStoreClientException.of(
+                                                    "Interrupted while waiting to retry: " +
                                                     t.getMessage(), t);
                                         }
                                     }
@@ -409,6 +423,31 @@ final class NodeTxExecutor {
                         .filter(e -> e != null)
                         .findFirst();
 
+    }
+
+    /**
+     * Retry only failures that a fresh attempt can plausibly fix (a transport error, a
+     * leader change). A DEADLINE_EXCEEDED would wait the full deadline again, a CANCELLED
+     * means the caller's thread was interrupted; neither is retried.
+     */
+    static boolean isRetryable(Throwable t) {
+        Throwable c = t;
+        while (c != null) {
+            if (c instanceof InterruptedException) {
+                return false;
+            }
+            if (c instanceof StatusRuntimeException) {
+                Status.Code code = ((StatusRuntimeException) c).getStatus().getCode();
+                if (code == Status.Code.DEADLINE_EXCEEDED || code == Status.Code.CANCELLED) {
+                    return false;
+                }
+            }
+            if (c.getCause() == c) {
+                break;
+            }
+            c = c.getCause();
+        }
+        return true;
     }
 
     private boolean isValid(Object obj) {
