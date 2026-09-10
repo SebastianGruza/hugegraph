@@ -17,7 +17,11 @@
 
 package org.apache.hugegraph.store.client;
 
+import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertSame;
+import static org.junit.Assert.assertThrows;
+import static org.junit.Assert.assertTrue;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
@@ -32,7 +36,11 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import org.apache.hugegraph.store.HgStoreSession;
+import org.apache.hugegraph.store.client.type.HgStoreClientException;
 import org.junit.Test;
+
+import io.grpc.Status;
+import io.grpc.StatusRuntimeException;
 
 public class NodeTxExecutorTest {
 
@@ -114,5 +122,68 @@ public class NodeTxExecutorTest {
         } finally {
             workers.shutdownNow();
         }
+    }
+
+    @Test
+    public void testIsRetryableClassifiesFailures() {
+        assertFalse(NodeTxExecutor.isRetryable(Status.DEADLINE_EXCEEDED.asRuntimeException()));
+        assertFalse(NodeTxExecutor.isRetryable(Status.CANCELLED.asRuntimeException()));
+        assertFalse(NodeTxExecutor.isRetryable(new InterruptedException("interrupted")));
+        // The status is usually wrapped by the time it reaches the retry loop
+        assertFalse(NodeTxExecutor.isRetryable(HgStoreClientException.of(
+                "commit failed", new RuntimeException(Status.DEADLINE_EXCEEDED.asRuntimeException()))));
+        assertTrue(NodeTxExecutor.isRetryable(Status.UNAVAILABLE.asRuntimeException()));
+        assertTrue(NodeTxExecutor.isRetryable(new RuntimeException("simulated transport failure")));
+    }
+
+    @Test
+    public void testDeadlineExceededIsNotRetried() {
+        NodeTxExecutor executor = NodeTxExecutor.graphOf("graph", null);
+        AtomicInteger attempts = new AtomicInteger();
+        HgStoreClientException e = assertThrows(HgStoreClientException.class, () ->
+                executor.retryingInvoke(() -> {
+                    attempts.incrementAndGet();
+                    throw Status.DEADLINE_EXCEEDED.withDescription("deadline exceeded after 20s")
+                                                  .asRuntimeException();
+                }));
+        assertEquals(1, attempts.get());
+        assertTrue(e.getMessage(), e.getMessage().contains("DEADLINE_EXCEEDED"));
+    }
+
+    @Test
+    public void testInterruptStopsRetrying() {
+        // A REST worker hitting restserver.request_timeout (or a Gremlin evaluationTimeout)
+        // interrupts the calling thread while the store call is failing; the loop must
+        // stop instead of sleeping and retrying with the interrupt swallowed.
+        NodeTxExecutor executor = NodeTxExecutor.graphOf("graph", null);
+        AtomicInteger attempts = new AtomicInteger();
+        try {
+            assertThrows(HgStoreClientException.class, () ->
+                    executor.retryingInvoke(() -> {
+                        attempts.incrementAndGet();
+                        Thread.currentThread().interrupt();
+                        throw new RuntimeException("simulated transport failure");
+                    }));
+            assertEquals(1, attempts.get());
+            assertTrue("interrupt flag must be restored for the caller",
+                       Thread.currentThread().isInterrupted());
+        } finally {
+            // clear the flag so the test runner thread is not left interrupted
+            Thread.interrupted();
+        }
+    }
+
+    @Test
+    public void testTransientFailureIsStillRetried() {
+        NodeTxExecutor executor = NodeTxExecutor.graphOf("graph", null);
+        AtomicInteger attempts = new AtomicInteger();
+        Optional<String> result = executor.retryingInvoke(() -> {
+            if (attempts.getAndIncrement() == 0) {
+                throw Status.UNAVAILABLE.withDescription("store replaced").asRuntimeException();
+            }
+            return "ok";
+        });
+        assertEquals("ok", result.get());
+        assertEquals(2, attempts.get());
     }
 }
