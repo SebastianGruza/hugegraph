@@ -56,6 +56,9 @@ import com.google.gson.GsonBuilder;
 
 public class ConditionQuery extends IdQuery {
 
+    // Semantic counterpart: hugegraph-struct's org.apache.hugegraph.query.ConditionQuery.
+    // Keep resolution changes coordinated; parity follow-up: #3200.
+
     public static final char INDEX_SYM_MIN = '\u0000';
     public static final String INDEX_SYM_ENDING = "\u0000";
     public static final String INDEX_SYM_NULL = "\u0001";
@@ -313,7 +316,7 @@ public class ConditionQuery extends IdQuery {
     /**
      * Returns whether there is any top-level relation for the specified key.
      */
-    public boolean containsCondition(Object key) {
+    private boolean containsCondition(Object key) {
         for (Condition c : this.conditions) {
             if (c.isRelation()) {
                 Condition.Relation r = (Condition.Relation) c;

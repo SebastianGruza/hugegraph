@@ -1055,7 +1055,7 @@ public final class TraversalUtil {
         // Scan the remaining traversal, its children and each ancestor's
         // remaining steps for filters on child output. Arbitrary extension
         // steps don't reliably expose element identity, so stay conservative.
-        // FIXME: Restore selective pushdown when every candidate schema label
+        // FIXME(#3201): Restore selective pushdown when every candidate schema label
         // has compatible index coverage for extracted property predicates.
         // Outside the proven root suffix below, negative labels can disable
         // property pushdown even across element changes (including ancestors

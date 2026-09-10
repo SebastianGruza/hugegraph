@@ -17,6 +17,7 @@
 
 package org.apache.hugegraph.unit.core;
 
+import java.lang.reflect.Modifier;
 import java.util.List;
 
 import org.apache.hugegraph.backend.id.Id;
@@ -39,6 +40,25 @@ import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
 
 public class QueryTest {
+
+    @Test
+    public void testContainsConditionOverloadVisibility() throws Exception {
+        Assert.assertThrows(NoSuchMethodException.class,
+                            () -> ConditionQuery.class.getMethod("containsCondition", Object.class));
+        Assert.assertTrue(Modifier.isPrivate(ConditionQuery.class
+                .getDeclaredMethod("containsCondition", Object.class).getModifiers()));
+        Assert.assertTrue(Modifier.isPublic(ConditionQuery.class
+                .getMethod("containsCondition", HugeKeys.class).getModifiers()));
+        Assert.assertTrue(Modifier.isPublic(ConditionQuery.class
+                .getMethod("containsCondition", Condition.RelationType.class).getModifiers()));
+
+        ConditionQuery query = new ConditionQuery(HugeType.VERTEX);
+        query.eq(HugeKeys.LABEL, IdGenerator.of(1L));
+        Assert.assertTrue(query.containsCondition(HugeKeys.LABEL));
+        Assert.assertFalse(query.containsCondition(HugeKeys.NAME));
+        Assert.assertTrue(query.containsCondition(Condition.RelationType.EQ));
+        Assert.assertFalse(query.containsCondition(Condition.RelationType.IN));
+    }
 
     @Test
     public void testOrderBy() {
