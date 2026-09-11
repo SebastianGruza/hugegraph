@@ -18,7 +18,6 @@
 package org.apache.hugegraph.store.client;
 
 import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertSame;
 import static org.junit.Assert.assertThrows;
 import static org.junit.Assert.assertTrue;
@@ -126,25 +125,32 @@ public class NodeTxExecutorTest {
     }
 
     @Test
-    public void testIsRetryableClassifiesFailures() {
-        assertFalse(NodeTxExecutor.isRetryable(Status.DEADLINE_EXCEEDED.asRuntimeException()));
-        assertFalse(NodeTxExecutor.isRetryable(Status.CANCELLED.asRuntimeException()));
-        assertFalse(NodeTxExecutor.isRetryable(new InterruptedException("interrupted")));
+    public void testClassifyFailures() {
+        assertEquals(NodeTxExecutor.Failure.DEADLINE,
+                     NodeTxExecutor.classify(Status.DEADLINE_EXCEEDED.asRuntimeException()));
+        assertEquals(NodeTxExecutor.Failure.FATAL,
+                     NodeTxExecutor.classify(Status.CANCELLED.asRuntimeException()));
+        assertEquals(NodeTxExecutor.Failure.FATAL,
+                     NodeTxExecutor.classify(new InterruptedException("interrupted")));
         // The status is usually wrapped by the time it reaches the retry loop
-        assertFalse(NodeTxExecutor.isRetryable(HgStoreClientException.of(
-                "commit failed",
-                new RuntimeException(Status.DEADLINE_EXCEEDED.asRuntimeException()))));
-        // one non-retryable failure among the suppressed ones decides
+        assertEquals(NodeTxExecutor.Failure.DEADLINE, NodeTxExecutor.classify(
+                HgStoreClientException.of("commit", new RuntimeException(
+                        Status.DEADLINE_EXCEEDED.asRuntimeException()))));
+        // The most severe class among the suppressed failures of a parallel commit wins
         HgStoreClientException mixed = HgStoreClientException.of(
                 Status.UNAVAILABLE.asRuntimeException());
         mixed.addSuppressed(Status.DEADLINE_EXCEEDED.asRuntimeException());
-        assertFalse(NodeTxExecutor.isRetryable(mixed));
-        assertTrue(NodeTxExecutor.isRetryable(Status.UNAVAILABLE.asRuntimeException()));
-        assertTrue(NodeTxExecutor.isRetryable(new RuntimeException("simulated transport failure")));
+        assertEquals(NodeTxExecutor.Failure.DEADLINE, NodeTxExecutor.classify(mixed));
+        mixed.addSuppressed(Status.CANCELLED.asRuntimeException());
+        assertEquals(NodeTxExecutor.Failure.FATAL, NodeTxExecutor.classify(mixed));
+        assertEquals(NodeTxExecutor.Failure.RETRYABLE,
+                     NodeTxExecutor.classify(Status.UNAVAILABLE.asRuntimeException()));
+        assertEquals(NodeTxExecutor.Failure.RETRYABLE,
+                     NodeTxExecutor.classify(new RuntimeException("simulated transport failure")));
     }
 
     @Test
-    public void testDeadlineExceededIsNotRetried() {
+    public void testDeadlineExceededIsRetriedExactlyOnce() {
         NodeTxExecutor executor = NodeTxExecutor.graphOf("graph", null);
         AtomicInteger attempts = new AtomicInteger();
         HgStoreClientException e = assertThrows(HgStoreClientException.class, () ->
@@ -153,8 +159,23 @@ public class NodeTxExecutorTest {
                     throw Status.DEADLINE_EXCEEDED.withDescription("deadline exceeded after 20s")
                                                   .asRuntimeException();
                 }));
-        assertEquals(1, attempts.get());
+        assertEquals(2, attempts.get());
         assertTrue(e.getMessage(), e.getMessage().contains("DEADLINE_EXCEEDED"));
+    }
+
+    @Test
+    public void testDeadlineThenNewLeaderSucceeds() {
+        // the failed RPC invalidates the partition cache; the single retry reaches the new leader
+        NodeTxExecutor executor = NodeTxExecutor.graphOf("graph", null);
+        AtomicInteger attempts = new AtomicInteger();
+        Optional<String> result = executor.retryingInvoke(() -> {
+            if (attempts.getAndIncrement() == 0) {
+                throw Status.DEADLINE_EXCEEDED.asRuntimeException();
+            }
+            return "ok";
+        });
+        assertEquals("ok", result.get());
+        assertEquals(2, attempts.get());
     }
 
     @Test
@@ -214,9 +235,9 @@ public class NodeTxExecutorTest {
     }
 
     @Test
-    public void testMixedCommitFailuresAreNotRetried() {
+    public void testMixedCommitFailuresAreRetriedExactlyOnce() {
         // One partition on a store being replaced (UNAVAILABLE, retryable), one on a stalled
-        // store (DEADLINE_EXCEEDED). Whichever finishes first, the commit must not be retried.
+        // store (DEADLINE_EXCEEDED). Whichever finishes first, the deadline decides: one retry.
         HgStoreSession unavailable = mock(HgStoreSession.class);
         HgStoreSession stalled = mock(HgStoreSession.class);
         when(unavailable.isTx()).thenReturn(true);
@@ -237,7 +258,7 @@ public class NodeTxExecutorTest {
         HgStoreClientException e = assertThrows(HgStoreClientException.class,
                                                 () -> executor.commitSessions(sessions));
         assertEquals(1, e.getSuppressed().length);
-        assertFalse(NodeTxExecutor.isRetryable(e));
+        assertEquals(NodeTxExecutor.Failure.DEADLINE, NodeTxExecutor.classify(e));
         verify(unavailable).rollback();
         verify(stalled).rollback();
 
@@ -248,7 +269,7 @@ public class NodeTxExecutorTest {
                     executor.commitSessions(sessions);
                     return true;
                 }));
-        assertEquals(1, attempts.get());
+        assertEquals(2, attempts.get());
     }
 
     @Test
@@ -265,6 +286,6 @@ public class NodeTxExecutorTest {
         HgStoreClientException e = assertThrows(HgStoreClientException.class,
                                                 () -> executor.commitSessions(Arrays.asList(a, b)));
         assertEquals(1, e.getSuppressed().length);
-        assertTrue(NodeTxExecutor.isRetryable(e));
+        assertEquals(NodeTxExecutor.Failure.RETRYABLE, NodeTxExecutor.classify(e));
     }
 }

@@ -398,6 +398,7 @@ final class NodeTxExecutor {
     }
 
     <T> Optional<T> retryingInvoke(Supplier<T> supplier) {
+        boolean[] deadlineRetried = {false};
         return IntStream.rangeClosed(0, NODE_MAX_RETRYING_TIMES).boxed()
                         .map(
                                 i -> {
@@ -412,14 +413,31 @@ final class NodeTxExecutor {
                                     try {
                                         buffer = supplier.get();
                                     } catch (Throwable t) {
-                                        if (!isRetryable(t)) {
-                                            // A deadline or a cancellation will not
-                                            // get better by waiting the full deadline
-                                            // again; fail fast and let the caller decide.
+                                        Failure failure = classify(t);
+                                        if (failure == Failure.FATAL) {
+                                            // The caller's thread was interrupted or the
+                                            // call was cancelled: fail fast.
                                             log.warn("Not retrying after: {}",
                                                      t.getMessage(), t);
                                             throw HgStoreClientException.of(
                                                     t.getMessage(), t);
+                                        }
+                                        if (failure == Failure.DEADLINE) {
+                                            // One retry: the NOT_WORK notice sent for the
+                                            // failed RPC reloads the partition leaders, so
+                                            // the next attempt can reach a new leader. A
+                                            // second deadline in a row would only wait the
+                                            // full deadline again on the same stalled store.
+                                            if (deadlineRetried[0]) {
+                                                log.warn("Not retrying a second deadline: {}",
+                                                         t.getMessage(), t);
+                                                throw HgStoreClientException.of(
+                                                        t.getMessage(), t);
+                                            }
+                                            deadlineRetried[0] = true;
+                                            log.warn("Deadline exceeded, retrying once in " +
+                                                     "case the partition leader moved: {}",
+                                                     t.getMessage());
                                         }
                                         if (i + 1 > NODE_MAX_RETRYING_TIMES) {
                                             log.error(maxTryMsg, t);
@@ -449,37 +467,51 @@ final class NodeTxExecutor {
     }
 
     /**
-     * Retry only failures that a fresh attempt can plausibly fix (a transport error, a
-     * leader change). A DEADLINE_EXCEEDED would wait the full deadline again, a CANCELLED
-     * means the caller's thread was interrupted; neither is retried, also when it is one of
-     * several failures of a parallel commit.
+     * How a failed attempt is treated by {@link #retryingInvoke}: FATAL is never retried (the
+     * caller's thread was interrupted, or the call was cancelled), DEADLINE is retried exactly
+     * once (the partition leader may have moved after the failed RPC invalidated the partition
+     * cache; a second deadline in a row would only wait the full deadline again on the same
+     * stalled store), everything else (transport errors, NOT_LEADER, store replacement) is
+     * retried up to NODE_MAX_RETRYING_TIMES as before. For a parallel commit the failures of
+     * the other partitions arrive as suppressed exceptions and are classified too; the most
+     * severe class wins.
      */
-    static boolean isRetryable(Throwable t) {
-        return isRetryable(t, Collections.newSetFromMap(new IdentityHashMap<>()));
+    enum Failure {
+        RETRYABLE, DEADLINE, FATAL
     }
 
-    private static boolean isRetryable(Throwable t, Set<Throwable> seen) {
+    static Failure classify(Throwable t) {
+        return classify(t, Collections.newSetFromMap(new IdentityHashMap<>()));
+    }
+
+    private static Failure classify(Throwable t, Set<Throwable> seen) {
+        Failure worst = Failure.RETRYABLE;
         Throwable c = t;
         while (c != null && seen.add(c)) {
             if (c instanceof InterruptedException) {
-                return false;
+                return Failure.FATAL;
             }
             if (c instanceof StatusRuntimeException) {
                 Status.Code code = ((StatusRuntimeException) c).getStatus().getCode();
-                if (code == Status.Code.DEADLINE_EXCEEDED || code == Status.Code.CANCELLED) {
-                    return false;
+                if (code == Status.Code.CANCELLED) {
+                    return Failure.FATAL;
+                }
+                if (code == Status.Code.DEADLINE_EXCEEDED) {
+                    worst = Failure.DEADLINE;
                 }
             }
-            // A parallel commit reports the other partitions' failures as suppressed;
-            // one non-retryable failure among them makes the whole attempt non-retryable.
             for (Throwable suppressed : c.getSuppressed()) {
-                if (!isRetryable(suppressed, seen)) {
-                    return false;
+                Failure f = classify(suppressed, seen);
+                if (f == Failure.FATAL) {
+                    return f;
+                }
+                if (f.compareTo(worst) > 0) {
+                    worst = f;
                 }
             }
             c = c.getCause();
         }
-        return true;
+        return worst;
     }
 
     private boolean isValid(Object obj) {
