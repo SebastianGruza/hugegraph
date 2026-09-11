@@ -406,8 +406,12 @@ final class NodeTxExecutor {
                                         // The caller (e.g. a REST worker hitting
                                         // restserver.request_timeout) gave up: stop
                                         // retrying instead of holding its thread.
+                                        // InterruptedException as the root cause: the
+                                        // server's task cancel path recognises it
+                                        // (HugeException.isInterrupted()).
                                         throw HgStoreClientException.of(
-                                                "Interrupted before retry " + i);
+                                                "Interrupted before retry " + i,
+                                                new InterruptedException());
                                     }
                                     T buffer = null;
                                     try {
@@ -453,9 +457,10 @@ final class NodeTxExecutor {
                                             Thread.sleep(sleepTime * 1000L);
                                         } catch (InterruptedException e) {
                                             Thread.currentThread().interrupt();
+                                            e.addSuppressed(t);
                                             throw HgStoreClientException.of(
                                                     "Interrupted while waiting to retry: " +
-                                                    t.getMessage(), t);
+                                                    t.getMessage(), e);
                                         }
                                     }
                                     return buffer;

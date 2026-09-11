@@ -186,7 +186,7 @@ public class NodeTxExecutorTest {
         NodeTxExecutor executor = NodeTxExecutor.graphOf("graph", null);
         AtomicInteger attempts = new AtomicInteger();
         try {
-            assertThrows(HgStoreClientException.class, () ->
+            HgStoreClientException e = assertThrows(HgStoreClientException.class, () ->
                     executor.retryingInvoke(() -> {
                         attempts.incrementAndGet();
                         Thread.currentThread().interrupt();
@@ -195,10 +195,21 @@ public class NodeTxExecutorTest {
             assertEquals(1, attempts.get());
             assertTrue("interrupt flag must be restored for the caller",
                        Thread.currentThread().isInterrupted());
+            // HugeException.isInterrupted() looks at the root cause
+            assertTrue(rootCause(e) instanceof InterruptedException);
+            assertEquals("simulated transport failure",
+                         rootCause(e).getSuppressed()[0].getMessage());
         } finally {
             // clear the flag so the test runner thread is not left interrupted
             Thread.interrupted();
         }
+    }
+
+    private static Throwable rootCause(Throwable t) {
+        while (t.getCause() != null && t.getCause() != t) {
+            t = t.getCause();
+        }
+        return t;
     }
 
     @Test
@@ -222,13 +233,14 @@ public class NodeTxExecutorTest {
         AtomicInteger attempts = new AtomicInteger();
         try {
             Thread.currentThread().interrupt();
-            assertThrows(HgStoreClientException.class, () ->
+            HgStoreClientException e = assertThrows(HgStoreClientException.class, () ->
                     executor.retryingInvoke(() -> {
                         attempts.incrementAndGet();
                         return "ok";
                     }));
             assertEquals(0, attempts.get());
             assertTrue(Thread.currentThread().isInterrupted());
+            assertTrue(rootCause(e) instanceof InterruptedException);
         } finally {
             Thread.interrupted();
         }
