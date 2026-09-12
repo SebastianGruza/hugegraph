@@ -33,7 +33,6 @@ import java.util.Optional;
 import java.util.Queue;
 import java.util.Set;
 import java.util.concurrent.ConcurrentLinkedQueue;
-import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Function;
 import java.util.function.Supplier;
 import java.util.stream.Collector;
@@ -65,8 +64,6 @@ final class NodeTxExecutor {
     private static final String maxTryMsg =
             "the number of retries reached the upper limit : " + NODE_MAX_RETRYING_TIMES +
             ",caused by:";
-    private static final String msg =
-            "Not all tx-data delivered to real-node-session successfully.";
 
     static {
         System.setProperty("java.util.concurrent.ForkJoinPool.common.parallelism",
@@ -128,13 +125,9 @@ final class NodeTxExecutor {
                 if (this.entries.isEmpty()) {
                     return true;
                 }
-                AtomicBoolean allSuccess = new AtomicBoolean(true);
                 for (HgPair<HgTriple<String, HgOwnerKey, Object>, Function<NodeTkv, Boolean>> e :
                         this.entries) {
                     doAction(e.getKey(), e.getValue());
-                }
-                if (!allSuccess.get()) {
-                    throw HgStoreClientException.of(msg);
                 }
                 this.commitSessions(this.sessions.values());
                 return true;
@@ -418,6 +411,11 @@ final class NodeTxExecutor {
                                         buffer = supplier.get();
                                     } catch (Throwable t) {
                                         Failure failure = classify(t);
+                                        if (failure != Failure.DEADLINE) {
+                                            // a different failure in between means the
+                                            // next deadline is not "in a row" again
+                                            deadlineRetried[0] = false;
+                                        }
                                         if (failure == Failure.FATAL) {
                                             // The caller's thread was interrupted or the
                                             // call was cancelled: fail fast.

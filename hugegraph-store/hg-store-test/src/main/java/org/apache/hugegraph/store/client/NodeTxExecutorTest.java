@@ -300,4 +300,25 @@ public class NodeTxExecutorTest {
         assertEquals(1, e.getSuppressed().length);
         assertEquals(NodeTxExecutor.Failure.RETRYABLE, NodeTxExecutor.classify(e));
     }
+
+    @Test
+    public void testDeadlineBudgetResetsAfterAnotherFailure() {
+        // deadline, then a transport error (leaders reloaded again), then a deadline:
+        // the two deadlines are not "in a row", so the second one is retried as well
+        NodeTxExecutor executor = NodeTxExecutor.graphOf("graph", null);
+        AtomicInteger attempts = new AtomicInteger();
+        Optional<String> result = executor.retryingInvoke(() -> {
+            switch (attempts.getAndIncrement()) {
+                case 0:
+                case 2:
+                    throw Status.DEADLINE_EXCEEDED.asRuntimeException();
+                case 1:
+                    throw Status.UNAVAILABLE.asRuntimeException();
+                default:
+                    return "ok";
+            }
+        });
+        assertEquals("ok", result.get());
+        assertEquals(4, attempts.get());
+    }
 }
