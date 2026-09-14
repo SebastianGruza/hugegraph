@@ -472,6 +472,9 @@ public class IndexLabelBuilder extends AbstractBuilder
             E.checkArgument(pkey.aggregateType().isIndexable(),
                             "The aggregate type %s is not indexable",
                             pkey.aggregateType());
+            E.checkArgument(!pkey.dataType().isDecimal(),
+                            "Not allowed to build index on property key " +
+                            "'%s' whose data type is decimal", pkey.name());
 
             if (pkey.cardinality().multiple()) {
                 E.checkArgument(fields.size() == 1,

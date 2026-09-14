@@ -19,6 +19,7 @@ package org.apache.hugegraph.io;
 
 import java.io.File;
 import java.io.IOException;
+import java.math.BigDecimal;
 import java.text.DateFormat;
 import java.text.ParseException;
 import java.text.SimpleDateFormat;
@@ -105,6 +106,7 @@ public class HugeGraphSONModule extends TinkerPopJacksonModule {
         TYPE_DEFINITIONS.put(Optional.class, "Optional");
         TYPE_DEFINITIONS.put(Date.class, "Date");
         TYPE_DEFINITIONS.put(UUID.class, "UUID");
+        TYPE_DEFINITIONS.put(BigDecimal.class, "BigDecimal");
 
         // HugeGraph id serializer
         TYPE_DEFINITIONS.put(StringId.class, "StringId");
@@ -183,6 +185,10 @@ public class HugeGraphSONModule extends TinkerPopJacksonModule {
 
         module.addSerializer(Blob.class, new BlobSerializer());
         module.addDeserializer(Blob.class, new BlobDeserializer());
+
+        // Decimals travel as strings: JSON numbers are doubles to most clients
+        module.addSerializer(BigDecimal.class, new BigDecimalSerializer());
+        module.addDeserializer(BigDecimal.class, new BigDecimalDeserializer());
     }
 
     public static void registerIdSerializers(SimpleModule module) {
@@ -954,6 +960,38 @@ public class HugeGraphSONModule extends TinkerPopJacksonModule {
                 throws IOException {
             byte[] bytes = jsonParser.getBinaryValue();
             return Blob.wrap(bytes);
+        }
+    }
+
+    private static class BigDecimalSerializer extends StdSerializer<BigDecimal> {
+
+        public BigDecimalSerializer() {
+            super(BigDecimal.class);
+        }
+
+        @Override
+        public void serialize(BigDecimal decimal, JsonGenerator jsonGenerator,
+                              SerializerProvider provider) throws IOException {
+            jsonGenerator.writeString(decimal.toPlainString());
+        }
+    }
+
+    private static class BigDecimalDeserializer extends StdDeserializer<BigDecimal> {
+
+        public BigDecimalDeserializer() {
+            super(BigDecimal.class);
+        }
+
+        @Override
+        public BigDecimal deserialize(JsonParser jsonParser,
+                                      DeserializationContext ctxt)
+                throws IOException {
+            JsonToken token = jsonParser.getCurrentToken();
+            if (token == JsonToken.VALUE_NUMBER_INT ||
+                token == JsonToken.VALUE_NUMBER_FLOAT) {
+                return jsonParser.getDecimalValue();
+            }
+            return new BigDecimal(jsonParser.getText().trim());
         }
     }
 }

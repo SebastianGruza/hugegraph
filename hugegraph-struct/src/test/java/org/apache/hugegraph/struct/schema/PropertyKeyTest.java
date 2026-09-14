@@ -17,11 +17,13 @@
 
 package org.apache.hugegraph.struct.schema;
 
+import java.math.BigDecimal;
 import java.util.Arrays;
 import java.util.Date;
 import java.util.Set;
 
 import org.apache.hugegraph.id.IdGenerator;
+import org.apache.hugegraph.serializer.BytesBuffer;
 import org.apache.hugegraph.type.define.Cardinality;
 import org.apache.hugegraph.type.define.DataType;
 import org.apache.hugegraph.util.DateUtil;
@@ -66,5 +68,32 @@ public class PropertyKeyTest {
         Set<?> values = (Set<?>) value;
         Assert.assertEquals(1, values.size());
         Assert.assertTrue(values.contains(DateUtil.parse(formatted)));
+    }
+
+    @Test
+    public void testDecimalPropertyRoundTripAndSchema() {
+        PropertyKey propertyKey = new PropertyKey(null, IdGenerator.of(2),
+                                                  "balance");
+        propertyKey.dataType(DataType.DECIMAL);
+        Assert.assertTrue(propertyKey.dataType().isDecimal());
+        Assert.assertFalse(propertyKey.dataType().isNumber());
+        Assert.assertTrue(propertyKey.convert2Groovy(false).contains(".asDecimal()"));
+
+        // uint256 max survives the struct BytesBuffer used by the store
+        BigDecimal value = new BigDecimal(
+                "115792089237316195423570985008687907853" +
+                "269984665640564039457584007913129639935");
+        BytesBuffer buffer = BytesBuffer.allocate(64);
+        buffer.writeProperty(DataType.DECIMAL, value);
+        Object read = BytesBuffer.wrap(buffer.bytes())
+                                 .readProperty(DataType.DECIMAL);
+        Assert.assertEquals(value, read);
+
+        BigDecimal wei = new BigDecimal("1.000000000000000001");
+        buffer = BytesBuffer.allocate(64);
+        buffer.writeProperty(DataType.DECIMAL, wei);
+        read = BytesBuffer.wrap(buffer.bytes()).readProperty(DataType.DECIMAL);
+        Assert.assertEquals(wei, read);
+        Assert.assertEquals(18, ((BigDecimal) read).scale());
     }
 }

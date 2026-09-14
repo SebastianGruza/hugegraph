@@ -19,6 +19,7 @@
 
 package org.apache.hugegraph.type.define;
 
+import java.math.BigDecimal;
 import java.nio.ByteBuffer;
 import java.util.Date;
 import java.util.List;
@@ -46,7 +47,12 @@ public enum DataType implements SerialEnum {
     TEXT(8, "text", String.class),
     BLOB(9, "blob", Blob.class),
     DATE(10, "date", Date.class),
-    UUID(11, "uuid", UUID.class);
+    UUID(11, "uuid", UUID.class),
+    /*
+     * Arbitrary-precision decimal (java.math.BigDecimal), see the server copy
+     * of this enum: exact, but not a sort key / index / OLAP range type.
+     */
+    DECIMAL(12, "decimal", BigDecimal.class);
 
     private final byte code;
     private final String name;
@@ -107,6 +113,10 @@ public enum DataType implements SerialEnum {
 
     public boolean isUUID() {
         return this == DataType.UUID;
+    }
+
+    public boolean isDecimal() {
+        return this == DataType.DECIMAL;
     }
 
     public <V> Number valueToNumber(V value) {

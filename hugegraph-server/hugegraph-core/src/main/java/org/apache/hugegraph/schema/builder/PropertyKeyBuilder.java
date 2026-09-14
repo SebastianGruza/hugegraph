@@ -274,6 +274,12 @@ public class PropertyKeyBuilder extends AbstractBuilder implements PropertyKey.B
     }
 
     @Override
+    public PropertyKeyBuilder asDecimal() {
+        this.dataType = DataType.DECIMAL;
+        return this;
+    }
+
+    @Override
     public PropertyKeyBuilder asFloat() {
         this.dataType = DataType.FLOAT;
         return this;
@@ -427,7 +433,8 @@ public class PropertyKeyBuilder extends AbstractBuilder implements PropertyKey.B
         }
 
         if (this.aggregateType.isNumber() &&
-            !this.dataType.isNumber() && !this.dataType.isDate()) {
+            !this.dataType.isNumber() && !this.dataType.isDecimal() &&
+            !this.dataType.isDate()) {
             throw new NotAllowException(
                     "Not allowed to set aggregate type '%s' for " +
                     "property key '%s' with data type '%s'",

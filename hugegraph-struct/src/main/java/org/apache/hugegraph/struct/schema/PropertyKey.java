@@ -424,6 +424,9 @@ public class PropertyKey extends SchemaElement implements Propfiable {
             case UUID:
                 builder.append(".asUUID()");
                 break;
+            case DECIMAL:
+                builder.append(".asDecimal()");
+                break;
             case OBJECT:
                 builder.append(".asObject()");
                 break;

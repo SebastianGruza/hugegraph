@@ -17,6 +17,8 @@
 
 package org.apache.hugegraph.unit.core;
 
+import java.math.BigInteger;
+import java.math.BigDecimal;
 import java.util.Date;
 import java.util.UUID;
 
@@ -40,12 +42,15 @@ public class DataTypeTest {
         Assert.assertEquals("blob", DataType.BLOB.string());
         Assert.assertEquals("date", DataType.DATE.string());
         Assert.assertEquals("uuid", DataType.UUID.string());
+        Assert.assertEquals("decimal", DataType.DECIMAL.string());
     }
 
     @Test
     public void testValueToNumber() {
         Assert.assertNull(DataType.BOOLEAN.valueToNumber(1));
         Assert.assertNull(DataType.INT.valueToNumber("not number"));
+        // decimal is not a "number" in the fixed-width sense
+        Assert.assertNull(DataType.DECIMAL.valueToNumber(1));
 
         Assert.assertEquals((byte) 1, DataType.BYTE.valueToNumber(1));
         Assert.assertEquals(1, DataType.INT.valueToNumber(1));
@@ -81,5 +86,75 @@ public class DataTypeTest {
 
         Assert.assertNull(DataType.TEXT.valueToUUID("2019-01-01 12:00:00"));
         Assert.assertNull(DataType.UUID.valueToUUID(true));
+    }
+
+    @Test
+    public void testDecimal() {
+        Assert.assertTrue(DataType.DECIMAL.isDecimal());
+        Assert.assertFalse(DataType.DECIMAL.isNumber());
+        Assert.assertFalse(DataType.DECIMAL.isNumber4());
+        Assert.assertFalse(DataType.DECIMAL.isNumber8());
+        Assert.assertFalse(DataType.DOUBLE.isDecimal());
+        Assert.assertEquals(BigDecimal.class, DataType.DECIMAL.clazz());
+        Assert.assertEquals(DataType.DECIMAL,
+                            DataType.fromClass(BigDecimal.class));
+    }
+
+    @Test
+    public void testValueToDecimal() {
+        // uint256 max: 78 digits, far beyond long and double
+        String uint256Max = "115792089237316195423570985008687907853" +
+                            "269984665640564039457584007913129639935";
+        BigDecimal expected = new BigDecimal(uint256Max);
+        Assert.assertSame(expected, DataType.DECIMAL.valueToDecimal(expected));
+        Assert.assertEquals(expected,
+                            DataType.DECIMAL.valueToDecimal(uint256Max));
+        Assert.assertEquals(expected, DataType.DECIMAL.valueToDecimal(
+                            new BigInteger(uint256Max)));
+        Assert.assertEquals(uint256Max, DataType.DECIMAL.valueToDecimal(
+                            " " + uint256Max + " ").toPlainString());
+
+        // scale is preserved: 1 wei on top of 1 ether, in ether
+        BigDecimal wei = DataType.DECIMAL.valueToDecimal(
+                         "1.000000000000000001");
+        Assert.assertEquals(18, wei.scale());
+        Assert.assertEquals("1.000000000000000001", wei.toPlainString());
+
+        // integral java numbers are exact
+        Assert.assertEquals(new BigDecimal("42"),
+                            DataType.DECIMAL.valueToDecimal(42));
+        Assert.assertEquals(new BigDecimal("42"),
+                            DataType.DECIMAL.valueToDecimal(42L));
+        Assert.assertEquals(new BigDecimal("-7"),
+                            DataType.DECIMAL.valueToDecimal((byte) -7));
+        // binary floats arrive as their shortest decimal representation
+        Assert.assertEquals(new BigDecimal("0.1"),
+                            DataType.DECIMAL.valueToDecimal(0.1D));
+        Assert.assertEquals(new BigDecimal("1.5"),
+                            DataType.DECIMAL.valueToDecimal(1.5F));
+        // negative and zero
+        Assert.assertEquals(new BigDecimal("-0.5"),
+                            DataType.DECIMAL.valueToDecimal("-0.5"));
+        Assert.assertEquals(BigDecimal.ZERO,
+                            DataType.DECIMAL.valueToDecimal("0"));
+
+        // not convertible
+        Assert.assertNull(DataType.DECIMAL.valueToDecimal(true));
+        Assert.assertNull(DataType.DECIMAL.valueToDecimal(new Date()));
+        Assert.assertNull(DataType.TEXT.valueToDecimal("1.5"));
+        Assert.assertNull(DataType.DOUBLE.valueToDecimal(1.5D));
+
+        Assert.assertThrows(IllegalArgumentException.class, () -> {
+            DataType.DECIMAL.valueToDecimal("12abc");
+        }, e -> {
+            Assert.assertContains("Can't read '12abc' as decimal",
+                                  e.getMessage());
+        });
+        Assert.assertThrows(IllegalArgumentException.class, () -> {
+            DataType.DECIMAL.valueToDecimal("");
+        });
+        Assert.assertThrows(IllegalArgumentException.class, () -> {
+            DataType.DECIMAL.valueToDecimal("0x10");
+        });
     }
 }

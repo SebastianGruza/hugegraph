@@ -17,6 +17,7 @@
 
 package org.apache.hugegraph.core;
 
+import java.math.BigDecimal;
 import java.util.Date;
 
 import org.apache.hugegraph.HugeException;
@@ -740,5 +741,52 @@ public class PropertyKeyCoreTest extends SchemaCoreTest {
                   .checkExist(false)
                   .create();
         });
+    }
+
+    @Test
+    public void testAddPropertyKeyWithDecimalType() {
+        SchemaManager schema = graph().schema();
+        PropertyKey balance = schema.propertyKey("balance")
+                                    .asDecimal()
+                                    .valueSingle()
+                                    .create();
+
+        Assert.assertEquals("balance", balance.name());
+        Assert.assertEquals(DataType.DECIMAL, balance.dataType());
+        Assert.assertEquals(Cardinality.SINGLE, balance.cardinality());
+        Assert.assertEquals(DataType.DECIMAL,
+                            graph().propertyKey("balance").dataType());
+
+        // values are normalised to BigDecimal, exactly
+        String uint256Max = "115792089237316195423570985008687907853" +
+                            "269984665640564039457584007913129639935";
+        Assert.assertEquals(new BigDecimal(uint256Max),
+                            balance.validValue(uint256Max));
+        Assert.assertEquals(new BigDecimal("42"), balance.validValue(42L));
+        Assert.assertEquals(new BigDecimal("0.1"), balance.validValue(0.1D));
+        Assert.assertNull(balance.validValue(true));
+        Assert.assertThrows(IllegalArgumentException.class, () -> {
+            balance.validValue("1,5");
+        }, e -> {
+            Assert.assertContains("Can't read '1,5' as decimal",
+                                  e.getMessage());
+        });
+
+        // SUM/MAX/MIN aggregate types are allowed like on any numeric key
+        PropertyKey total = schema.propertyKey("total")
+                                  .asDecimal()
+                                  .calcSum()
+                                  .create();
+        Assert.assertEquals(AggregateType.SUM, total.aggregateType());
+
+        // decimal lists and sets
+        PropertyKey amounts = schema.propertyKey("amounts")
+                                    .asDecimal()
+                                    .valueList()
+                                    .create();
+        Assert.assertEquals(Cardinality.LIST, amounts.cardinality());
+        Assert.assertEquals(ImmutableList.of(new BigDecimal("1"),
+                                             new BigDecimal("2.5")),
+                            amounts.validValue(ImmutableList.of("1", "2.5")));
     }
 }
