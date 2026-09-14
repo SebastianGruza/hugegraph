@@ -391,7 +391,11 @@ final class NodeTxExecutor {
     }
 
     <T> Optional<T> retryingInvoke(Supplier<T> supplier) {
-        boolean[] deadlineRetried = {false};
+        // Deadlines are counted per call, whatever fails in between: a deadline, a fast
+        // NOT_LEADER/UNAVAILABLE while raft is still electing, then another deadline on the
+        // same stalled store must not restart the budget, or one call could wait on up to
+        // six full deadlines before NODE_MAX_RETRYING_TIMES is reached.
+        int[] deadlines = {0};
         return IntStream.rangeClosed(0, NODE_MAX_RETRYING_TIMES).boxed()
                         .map(
                                 i -> {
@@ -411,11 +415,6 @@ final class NodeTxExecutor {
                                         buffer = supplier.get();
                                     } catch (Throwable t) {
                                         Failure failure = classify(t);
-                                        if (failure != Failure.DEADLINE) {
-                                            // a different failure in between means the
-                                            // next deadline is not "in a row" again
-                                            deadlineRetried[0] = false;
-                                        }
                                         if (failure == Failure.FATAL) {
                                             // The caller's thread was interrupted or the
                                             // call was cancelled: fail fast.
@@ -428,15 +427,15 @@ final class NodeTxExecutor {
                                             // One retry: the NOT_WORK notice sent for the
                                             // failed RPC reloads the partition leaders, so
                                             // the next attempt can reach a new leader. A
-                                            // second deadline in a row would only wait the
-                                            // full deadline again on the same stalled store.
-                                            if (deadlineRetried[0]) {
+                                            // second deadline in this call would only wait
+                                            // the full deadline again on the same stalled
+                                            // store.
+                                            if (++deadlines[0] > 1) {
                                                 log.warn("Not retrying a second deadline: {}",
                                                          t.getMessage(), t);
                                                 throw HgStoreClientException.of(
                                                         t.getMessage(), t);
                                             }
-                                            deadlineRetried[0] = true;
                                             log.warn("Deadline exceeded, retrying once in " +
                                                      "case the partition leader moved: {}",
                                                      t.getMessage());
@@ -472,10 +471,11 @@ final class NodeTxExecutor {
     /**
      * How a failed attempt is treated by {@link #retryingInvoke}: FATAL is never retried (the
      * caller's thread was interrupted, or the call was cancelled), DEADLINE is retried exactly
-     * once (the partition leader may have moved after the failed RPC invalidated the partition
-     * cache; a second deadline in a row would only wait the full deadline again on the same
-     * stalled store), everything else (transport errors, NOT_LEADER, store replacement) is
-     * retried up to NODE_MAX_RETRYING_TIMES as before. For a parallel commit the failures of
+     * once per call (the partition leader may have moved after the failed RPC invalidated the
+     * partition cache; a second deadline, with or without other failures in between, would
+     * only wait the full deadline again on the same stalled store, so a call blocks on at
+     * most two deadlines), everything else (transport errors, NOT_LEADER, store replacement)
+     * is retried up to NODE_MAX_RETRYING_TIMES as before. For a parallel commit the failures of
      * the other partitions arrive as suppressed exceptions and are classified too; the most
      * severe class wins.
      */
