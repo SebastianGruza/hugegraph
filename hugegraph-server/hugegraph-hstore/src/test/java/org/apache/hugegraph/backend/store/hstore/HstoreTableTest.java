@@ -181,9 +181,10 @@ public class HstoreTableTest {
 
     @Test
     public void testPrefixListQueryPushesCopyAndKeepsOrigin() {
-        // prepareConditionQueryList() is reached from queryByPrefixList() and
-        // from the streaming query(Session, Iterator, String); one origin
-        // query is shared by every prefix query of the batch
+        // prepareConditionQueryList() is called from queryByPrefixList() and
+        // from the streaming query(Session, Iterator, String); neither has a
+        // live caller in the server today, so this pins the method contract:
+        // one origin query is shared by every prefix query of the batch
         ConditionQuery origin = new ConditionQuery(HugeType.EDGE);
         origin.eq(HugeKeys.OWNER_VERTEX, IdGenerator.of("v1"));
         origin.eq(HugeKeys.DIRECTION, Directions.OUT);
