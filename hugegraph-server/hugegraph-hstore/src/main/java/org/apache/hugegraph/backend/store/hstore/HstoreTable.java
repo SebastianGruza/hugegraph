@@ -656,6 +656,10 @@ public class HstoreTable extends BackendTable<Session, BackendEntry> {
             // label, sort values), which are already enforced by the key
             // range, and the store-side row decoder cannot parse the raw
             // property layout written by the server (see issue #3090).
+            // The guard applies to the range path only because the key range
+            // already covers its sysprops; the full-scan path (queryAll and
+            // the shard overload of queryByRange) still needs the pushdown to
+            // filter, so it keeps pushing the whole query.
             ConditionQuery cq = prepareConditionQuery((ConditionQuery) origin);
             queryBytes = cq == null ? null : cq.bytes();
         }
