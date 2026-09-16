@@ -37,6 +37,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Consumer;
+import java.util.function.IntSupplier;
 import java.util.stream.Collectors;
 
 import org.apache.commons.configuration2.Configuration;
@@ -233,6 +234,18 @@ public final class GraphManager {
             this.authManager = this.authenticator.authManager();
         } else {
             this.authManager = null;
+        }
+
+        /*
+         * With PD, opening any hstore graph (a local conf/graphs one here,
+         * the system graph in loadMetaFromPD()) needs pd.initial-store-count
+         * active stores, and the store client gives up after a fixed 10
+         * retries (about 38 s). On a cold start the stores usually register
+         * later than that and the server exits 1, so wait for them first
+         * (issue #3203).
+         */
+        if (conf.get(ServerOptions.USE_PD)) {
+            this.waitForActiveStores();
         }
 
         // load graphs
@@ -480,6 +493,82 @@ public final class GraphManager {
         graph.createTime(timeStamp);
         graph.updateTime(timeStamp);
         return graph;
+    }
+
+    private void waitForActiveStores() {
+        int timeout = this.conf.get(ServerOptions.PD_STORES_WAIT_TIMEOUT);
+        if (timeout <= 0) {
+            return;
+        }
+        PDConfig pdConfig = PDConfig.of(this.pdPeers);
+        pdConfig.setAuthority(PdMetaDriver.PDAuthConfig.service(),
+                              PdMetaDriver.PDAuthConfig.token());
+        // same short-lived client as limitStorage(); PDClient has no close()
+        PDClient pdClient = PDClient.create(pdConfig);
+        try {
+            Metapb.PDConfig pd = pdClient.getPDConfig();
+            int required = pd.getMinStoreCount() > 0 ? pd.getMinStoreCount() :
+                           Math.max(pd.getShardCount(), 1);
+            LOG.info("PD needs {} active store(s) (min_store_count={}, " +
+                     "shard_count={}); waiting up to {}s",
+                     required, pd.getMinStoreCount(), pd.getShardCount(),
+                     timeout);
+            waitForStores(() -> {
+                try {
+                    return pdClient.getActiveStores().size();
+                } catch (PDException e) {
+                    LOG.warn("Failed to list active stores from PD: {}",
+                             e.getMessage());
+                    return -1;
+                }
+            }, required, timeout, STORES_WAIT_POLL_SECONDS);
+        } catch (PDException e) {
+            throw new HugeException("Failed to read the PD config while " +
+                                    "waiting for the stores", e);
+        }
+    }
+
+    public static final int STORES_WAIT_POLL_SECONDS = 5;
+
+    /**
+     * Poll {@code activeStores} until it reports at least {@code required}
+     * stores, at most {@code timeoutSeconds}. A negative count means the
+     * query failed and is retried like a short count.
+     *
+     * @return the number of seconds waited
+     * @throws HugeException when the timeout passes first
+     */
+    public static long waitForStores(IntSupplier activeStores, int required,
+                                     long timeoutSeconds, long pollSeconds) {
+        long deadline = System.currentTimeMillis() + timeoutSeconds * 1000L;
+        long start = System.currentTimeMillis();
+        int active = activeStores.getAsInt();
+        while (active < required) {
+            long left = deadline - System.currentTimeMillis();
+            if (left <= 0) {
+                throw new HugeException(
+                        "Timed out after %ds waiting for %d active store(s) " +
+                        "in PD (%d registered); start the stores first or " +
+                        "raise %s", timeoutSeconds, required,
+                        Math.max(active, 0),
+                        ServerOptions.PD_STORES_WAIT_TIMEOUT.name());
+            }
+            LOG.info("Waiting for {}/{} active store(s) in PD, {}s left",
+                     Math.max(active, 0), required, left / 1000);
+            try {
+                Thread.sleep(Math.min(pollSeconds * 1000L, left));
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                throw new HugeException("Interrupted while waiting for " +
+                                        "the stores", e);
+            }
+            active = activeStores.getAsInt();
+        }
+        long waited = (System.currentTimeMillis() - start) / 1000;
+        if (waited > 0) {
+            LOG.info("{} active store(s) in PD after {}s", active, waited);
+        }
+        return waited;
     }
 
     public void init() {
