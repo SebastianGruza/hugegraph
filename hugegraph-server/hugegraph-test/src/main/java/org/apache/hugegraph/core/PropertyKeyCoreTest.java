@@ -806,6 +806,19 @@ public class PropertyKeyCoreTest extends SchemaCoreTest {
             Assert.assertContains("Can't read '1,5' as decimal",
                                   e.getMessage());
         });
+        // bounds hold for strings and for ready-made BigDecimals alike
+        Assert.assertThrows(IllegalArgumentException.class, () -> {
+            balance.validValue("1E+999999999");
+        }, e -> {
+            Assert.assertContains("out of bounds", e.getMessage());
+        });
+        Assert.assertThrows(IllegalArgumentException.class, () -> {
+            balance.validValue(new BigDecimal("1E+999999999"));
+        }, e -> {
+            Assert.assertContains("out of bounds", e.getMessage());
+        });
+        Assert.assertEquals(new BigDecimal("1E+128"),
+                            balance.validValue(new BigDecimal("1E+128")));
 
         // SUM/MAX/MIN aggregate types are allowed like on any numeric key
         PropertyKey total = schema.propertyKey("total")

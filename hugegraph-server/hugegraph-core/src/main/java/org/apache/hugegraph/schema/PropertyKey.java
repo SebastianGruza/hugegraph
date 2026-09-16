@@ -311,8 +311,11 @@ public class PropertyKey extends SchemaElement implements Propertiable {
         if (value == null) {
             return null;
         }
-        if (this.checkValueType(value)) {
-            // Same as expected type, no conversion required
+        if (this.checkValueType(value) && !this.dataType().isDecimal()) {
+            // Same as expected type, no conversion required. A decimal is
+            // not short-circuited: a ready-made BigDecimal (Gremlin literal,
+            // SUM result of a batch update) still has to pass the bounds
+            // check in DataType.valueToDecimal()
             return value;
         }
 

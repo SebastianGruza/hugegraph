@@ -132,6 +132,17 @@ public class PropertyKeyTest {
         Assert.assertThrows(IllegalArgumentException.class, () -> {
             propertyKey.validValueOrThrow(new Date());
         });
+        // bounds: a huge exponent must not reach the store
+        for (String bad : new String[]{"1E+999999999", "1E-999999999"}) {
+            Assert.assertThrows(IllegalArgumentException.class, () -> {
+                propertyKey.validValueOrThrow(bad);
+            });
+        }
+        Assert.assertThrows(IllegalArgumentException.class, () -> {
+            propertyKey.validValueOrThrow(new BigDecimal("1E+999999999"));
+        });
+        Assert.assertEquals(new BigDecimal("1E+128"),
+                            propertyKey.validValueOrThrow("1E+128"));
     }
 
     @Test

@@ -101,6 +101,42 @@ public class DataTypeTest {
     }
 
     @Test
+    public void testValueToDecimalBounds() {
+        // a huge exponent is a few bytes on disk and a billion characters
+        // from toPlainString() on every read: rejected before it is stored
+        for (String bad : new String[]{"1E+999999999", "1E-999999999",
+                                       "1E+129", "1E-129"}) {
+            Assert.assertThrows(IllegalArgumentException.class, () -> {
+                DataType.DECIMAL.valueToDecimal(bad);
+            }, e -> {
+                Assert.assertContains("out of bounds", e.getMessage());
+            });
+        }
+        // the same check applies to a BigDecimal that arrives ready-made
+        // (Gremlin literal, SUM result)
+        Assert.assertThrows(IllegalArgumentException.class, () -> {
+            DataType.DECIMAL.valueToDecimal(new BigDecimal("1E+999999999"));
+        });
+        // 129 significant digits rejected, 128 accepted
+        String digits128 = "1".repeat(128);
+        Assert.assertThrows(IllegalArgumentException.class, () -> {
+            DataType.DECIMAL.valueToDecimal(digits128 + "1");
+        });
+        Assert.assertEquals(new BigDecimal(digits128),
+                            DataType.DECIMAL.valueToDecimal(digits128));
+        // uint256 max with 18 fraction digits (96 digits) is inside
+        String uint256Max = "115792089237316195423570985008687907853" +
+                            "269984665640564039457584007913129639935";
+        BigDecimal wide = new BigDecimal(uint256Max + ".000000000000000001");
+        Assert.assertEquals(wide, DataType.DECIMAL.valueToDecimal(wide));
+        // scale boundary in both directions
+        Assert.assertEquals(new BigDecimal("1E+128"),
+                            DataType.DECIMAL.valueToDecimal("1E+128"));
+        Assert.assertEquals(new BigDecimal("1E-128"),
+                            DataType.DECIMAL.valueToDecimal("1E-128"));
+    }
+
+    @Test
     public void testValueToDecimal() {
         // uint256 max: 78 digits, far beyond long and double
         String uint256Max = "115792089237316195423570985008687907853" +
