@@ -20,6 +20,7 @@
 package org.apache.hugegraph.type.define;
 
 import java.math.BigDecimal;
+import java.math.BigInteger;
 import java.nio.ByteBuffer;
 import java.util.Date;
 import java.util.List;
@@ -157,6 +158,32 @@ public enum DataType implements SerialEnum {
                       value, this.name, e.getMessage()));
         }
         return number;
+    }
+
+    public <V> BigDecimal valueToDecimal(V value) {
+        if (!this.isDecimal()) {
+            return null;
+        }
+        if (value instanceof BigDecimal) {
+            return (BigDecimal) value;
+        }
+        if (value instanceof BigInteger) {
+            return new BigDecimal((BigInteger) value);
+        }
+        if (value instanceof Byte || value instanceof Short ||
+            value instanceof Integer || value instanceof Long) {
+            return BigDecimal.valueOf(((Number) value).longValue());
+        }
+        if (!(value instanceof Number) && !(value instanceof String)) {
+            return null;
+        }
+        String text = value.toString().trim();
+        try {
+            return new BigDecimal(text);
+        } catch (NumberFormatException e) {
+            throw new IllegalArgumentException(String.format(
+                    "Can't read '%s' as decimal", value));
+        }
     }
 
     public <V> Date valueToDate(V value) {

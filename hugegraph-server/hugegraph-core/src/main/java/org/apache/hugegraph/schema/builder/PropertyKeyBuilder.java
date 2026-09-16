@@ -459,6 +459,16 @@ public class PropertyKeyBuilder extends AbstractBuilder implements PropertyKey.B
                     "property key '%s'", this.aggregateType, this.name);
         }
 
+        if (this.dataType.isDecimal() &&
+            this.writeType != WriteType.OLAP_COMMON) {
+            // OLAP_SECONDARY / OLAP_RANGE build an index label on the key,
+            // and no index of any type is allowed on a decimal
+            throw new NotAllowException(
+                    "Not allowed to set write type to %s for property key " +
+                    "'%s' with data type '%s': decimal keys can't be indexed",
+                    this.writeType, this.name, this.dataType);
+        }
+
         if (this.writeType == WriteType.OLAP_RANGE &&
             !this.dataType.isNumber() && !this.dataType.isDate()) {
             throw new NotAllowException(

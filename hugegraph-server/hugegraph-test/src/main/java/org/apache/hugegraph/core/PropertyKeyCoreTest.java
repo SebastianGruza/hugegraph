@@ -393,6 +393,41 @@ public class PropertyKeyCoreTest extends SchemaCoreTest {
     }
 
     @Test
+    public void testAddOlapPropertyKeyWithDecimalType() {
+        Assume.assumeTrue("Not support olap properties",
+                          storeFeatures().supportsOlapProperties());
+
+        SchemaManager schema = graph().schema();
+
+        // OLAP_SECONDARY and OLAP_RANGE build an index label on the key
+        // through SchemaTransaction.createIndexLabelForOlapPk(), which
+        // skips IndexLabelBuilder.checkFields(): the rule "no index of any
+        // type on a decimal" has to hold there too
+        Assert.assertThrows(NotAllowException.class, () -> {
+            schema.propertyKey("rank").asDecimal().valueSingle()
+                  .writeType(WriteType.OLAP_SECONDARY).create();
+        }, e -> {
+            Assert.assertContains("decimal keys can't be indexed",
+                                  e.getMessage());
+        });
+        Assert.assertThrows(NotAllowException.class, () -> {
+            schema.propertyKey("rank").asDecimal().valueSingle()
+                  .writeType(WriteType.OLAP_RANGE).create();
+        }, e -> {
+            Assert.assertContains("decimal keys can't be indexed",
+                                  e.getMessage());
+        });
+        Assert.assertFalse(graph().existsIndexLabel("*olap_by_rank"));
+
+        // OLAP_COMMON has no index and stays allowed
+        PropertyKey rank = schema.propertyKey("rank").asDecimal()
+                                 .valueSingle()
+                                 .writeType(WriteType.OLAP_COMMON).create();
+        Assert.assertEquals(DataType.DECIMAL, rank.dataType());
+        Assert.assertEquals(WriteType.OLAP_COMMON, rank.writeType());
+    }
+
+    @Test
     public void testClearOlapPropertyKey() {
         Assume.assumeTrue("Not support olap properties",
                           storeFeatures().supportsOlapProperties());

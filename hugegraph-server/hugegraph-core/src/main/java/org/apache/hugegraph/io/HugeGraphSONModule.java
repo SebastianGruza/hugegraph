@@ -106,7 +106,6 @@ public class HugeGraphSONModule extends TinkerPopJacksonModule {
         TYPE_DEFINITIONS.put(Optional.class, "Optional");
         TYPE_DEFINITIONS.put(Date.class, "Date");
         TYPE_DEFINITIONS.put(UUID.class, "UUID");
-        TYPE_DEFINITIONS.put(BigDecimal.class, "BigDecimal");
 
         // HugeGraph id serializer
         TYPE_DEFINITIONS.put(StringId.class, "StringId");
@@ -973,6 +972,26 @@ public class HugeGraphSONModule extends TinkerPopJacksonModule {
         public void serialize(BigDecimal decimal, JsonGenerator jsonGenerator,
                               SerializerProvider provider) throws IOException {
             jsonGenerator.writeString(decimal.toPlainString());
+        }
+
+        @Override
+        public void serializeWithType(BigDecimal decimal,
+                                      JsonGenerator jsonGenerator,
+                                      SerializerProvider provider,
+                                      TypeSerializer typeSer)
+                throws IOException {
+            /*
+             * The typed GraphSON mappers (v2/v3) call this variant and
+             * StdSerializer does not implement it. Keep the type prefix so
+             * that the value stays "gx:BigDecimal", but carry the plain
+             * string inside it: a JSON number would be read as a double by
+             * most clients, which is what this type exists to avoid.
+             */
+            WritableTypeId typeId = typeSer.typeId(decimal,
+                                                   JsonToken.VALUE_STRING);
+            typeSer.writeTypePrefix(jsonGenerator, typeId);
+            this.serialize(decimal, jsonGenerator, provider);
+            typeSer.writeTypeSuffix(jsonGenerator, typeId);
         }
     }
 

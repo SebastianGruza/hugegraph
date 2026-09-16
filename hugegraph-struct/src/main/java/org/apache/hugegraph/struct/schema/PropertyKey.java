@@ -373,6 +373,10 @@ public class PropertyKey extends SchemaElement implements Propfiable {
             @SuppressWarnings("unchecked")
             V blob = (V) this.dataType().valueToBlob(value);
             return blob;
+        } else if (this.dataType().isDecimal()) {
+            @SuppressWarnings("unchecked")
+            V decimal = (V) this.dataType().valueToDecimal(value);
+            return decimal;
         }
 
         if (this.checkDataType(value)) {
@@ -550,6 +554,8 @@ public class PropertyKey extends SchemaElement implements Propfiable {
         Builder asFloat();
 
         Builder asLong();
+
+        Builder asDecimal();
 
         Builder valueSingle();
 
