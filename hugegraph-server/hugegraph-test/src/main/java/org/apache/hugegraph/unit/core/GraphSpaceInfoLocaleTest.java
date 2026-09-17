@@ -33,7 +33,8 @@ import org.junit.Test;
 public class GraphSpaceInfoLocaleTest extends BaseUnitTest {
 
     private static float storagePercent(Locale locale) {
-        Locale saved = Locale.getDefault();
+        Locale savedFormat = Locale.getDefault(Locale.Category.FORMAT);
+        Locale savedDisplay = Locale.getDefault(Locale.Category.DISPLAY);
         Locale.setDefault(locale);
         try {
             GraphSpace space = new GraphSpace("gs_locale");
@@ -42,7 +43,8 @@ public class GraphSpaceInfoLocaleTest extends BaseUnitTest {
             Map<String, Object> info = space.info();
             return (Float) info.get("storage_percent");
         } finally {
-            Locale.setDefault(saved);
+            Locale.setDefault(Locale.Category.FORMAT, savedFormat);
+            Locale.setDefault(Locale.Category.DISPLAY, savedDisplay);
         }
     }
 
