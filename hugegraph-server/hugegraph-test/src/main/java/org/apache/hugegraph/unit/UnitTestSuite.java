@@ -49,6 +49,7 @@ import org.apache.hugegraph.unit.core.BackendStoreInfoTest;
 import org.apache.hugegraph.unit.core.ConditionQueryFlattenTest;
 import org.apache.hugegraph.unit.core.ConditionTest;
 import org.apache.hugegraph.unit.core.DataTypeTest;
+import org.apache.hugegraph.unit.core.GraphSpaceInfoLocaleTest;
 import org.apache.hugegraph.unit.core.GraphManagerStoresWaitTest;
 import org.apache.hugegraph.unit.core.DirectionsTest;
 import org.apache.hugegraph.unit.core.ExceptionTest;
@@ -137,6 +138,7 @@ import org.junit.runners.Suite;
 
         /* types */
         DataTypeTest.class,
+        GraphSpaceInfoLocaleTest.class,
         GraphManagerStoresWaitTest.class,
         DirectionsTest.class,
         SerialEnumTest.class,
