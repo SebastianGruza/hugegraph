@@ -612,6 +612,8 @@ public final class GraphManager {
                     peer, p -> ManagedChannelBuilder.forTarget(p)
                                                     .usePlaintext().build());
             PDGrpc.PDBlockingStub stub = PDGrpc.newBlockingStub(channel)
+                                               .withMaxInboundMessageSize(
+                                                       PDConfig.getInboundMessageSize())
                                                .withDeadlineAfter(deadlineMillis,
                                                                   TimeUnit.MILLISECONDS);
             // PDConfig.setAuthority() keeps the user name empty when PD

@@ -17,15 +17,26 @@
 
 package org.apache.hugegraph.unit.core;
 
+import java.lang.reflect.Constructor;
 import java.util.AbstractMap;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
+
+import io.grpc.Server;
+import io.grpc.ServerBuilder;
+import io.grpc.stub.StreamObserver;
 
 import org.apache.hugegraph.HugeException;
 import org.apache.hugegraph.core.GraphManager;
 import org.apache.hugegraph.core.GraphManager.Readiness;
+import org.apache.hugegraph.pd.client.PDConfig;
+import org.apache.hugegraph.pd.grpc.Metapb;
+import org.apache.hugegraph.pd.grpc.PDGrpc;
+import org.apache.hugegraph.pd.grpc.Pdpb;
 import org.apache.hugegraph.testutil.Assert;
 import org.apache.hugegraph.unit.BaseUnitTest;
 import org.junit.Test;
@@ -39,6 +50,41 @@ public class GraphManagerStoresWaitTest extends BaseUnitTest {
 
     private static Map.Entry<Readiness, String> answer(Readiness r, String m) {
         return new AbstractMap.SimpleImmutableEntry<>(r, m);
+    }
+
+    @Test
+    public void testProbeAcceptsLargePartitionResponse() throws Exception {
+        Metapb.Partition partition = Metapb.Partition.newBuilder()
+                .setGraphName("graph-" + "x".repeat(120)).build();
+        Pdpb.QueryPartitionsResponse response =
+                Pdpb.QueryPartitionsResponse.newBuilder()
+                    .addAllPartitions(Collections.nCopies(40000, partition))
+                    .build();
+        Assert.assertTrue(response.getSerializedSize() > 4 * 1024 * 1024);
+        Server server = ServerBuilder.forPort(0)
+                .addService(new PDGrpc.PDImplBase() {
+                    @Override
+                    public void queryPartitions(Pdpb.QueryPartitionsRequest request,
+                                                StreamObserver<Pdpb.QueryPartitionsResponse> observer) {
+                        observer.onNext(response);
+                        observer.onCompleted();
+                    }
+                }).build().start();
+        try {
+            Class<?> clazz = Class.forName(
+                    "org.apache.hugegraph.core.GraphManager$PdReadinessProbe");
+            Constructor<?> constructor = clazz.getDeclaredConstructor(PDConfig.class);
+            constructor.setAccessible(true);
+            Object probe = constructor.newInstance(
+                    PDConfig.of("127.0.0.1:" + server.getPort()));
+            try (AutoCloseable closeable = (AutoCloseable) probe) {
+                Map.Entry<Readiness, String> result =
+                        ((GraphManager.ReadinessProbe) probe).probe(10000);
+                Assert.assertEquals(result.getValue(), Readiness.READY, result.getKey());
+            }
+        } finally {
+            server.shutdownNow().awaitTermination(5, TimeUnit.SECONDS);
+        }
     }
 
     @Test
