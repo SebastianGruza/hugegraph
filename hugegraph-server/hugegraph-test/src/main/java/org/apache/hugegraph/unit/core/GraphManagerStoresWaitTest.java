@@ -17,59 +17,102 @@
 
 package org.apache.hugegraph.unit.core;
 
+import java.util.AbstractMap;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Map;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import org.apache.hugegraph.HugeException;
 import org.apache.hugegraph.core.GraphManager;
+import org.apache.hugegraph.core.GraphManager.Readiness;
 import org.apache.hugegraph.testutil.Assert;
 import org.apache.hugegraph.unit.BaseUnitTest;
 import org.junit.Test;
 
 /**
- * The store wait used on the first boot of a PD cluster (issue #3203):
- * poll the active store count until it reaches pd.initial-store-count,
- * bounded by pd.stores_wait_timeout.
+ * The startup wait for a PD cluster (issue #3203): poll a readiness probe
+ * until the cluster is ready, bounded by pd.stores_wait_timeout, with every
+ * call's deadline bounded by the remaining budget.
  */
 public class GraphManagerStoresWaitTest extends BaseUnitTest {
 
+    private static Map.Entry<Readiness, String> answer(Readiness r, String m) {
+        return new AbstractMap.SimpleImmutableEntry<>(r, m);
+    }
+
     @Test
-    public void testEnoughStoresReturnsAtOnce() {
+    public void testInitialisedClusterIsNotWaitedFor() {
+        // a restart with one store down: partitions exist, PD may even say
+        // Cluster_Not_Ready, the server must not wait
         AtomicInteger calls = new AtomicInteger();
-        long waited = GraphManager.waitForStores(() -> {
+        long waited = GraphManager.waitForCluster(deadline -> {
             calls.incrementAndGet();
-            return 3;
-        }, 3, 60, 1);
+            return answer(Readiness.READY, "cluster already has 12 partition(s)");
+        }, 300, 5);
         Assert.assertEquals(0L, waited);
         Assert.assertEquals(1, calls.get());
     }
 
     @Test
-    public void testStoresArrivingLaterAreWaitedFor() {
-        // 0, 1, 2 stores on the first three polls, then 3: the fourth poll
-        // ends the wait; a failed query (-1) counts like a short answer
-        int[] answers = {0, -1, 2, 3};
+    public void testColdStartWaitsUntilPdReportsOk() {
+        // first boot: stores register over time, PD flips to Cluster_OK on
+        // the fourth poll; one unreachable answer in between is retried
+        List<Map.Entry<Readiness, String>> answers = new ArrayList<>();
+        answers.add(answer(Readiness.NOT_READY, "Cluster_Not_Ready: 0 stores"));
+        answers.add(answer(Readiness.UNREACHABLE, "pd-1:8686: UNAVAILABLE"));
+        answers.add(answer(Readiness.NOT_READY, "Cluster_Not_Ready: 1 store"));
+        answers.add(answer(Readiness.READY, "PD reports Cluster_OK"));
         AtomicInteger calls = new AtomicInteger();
-        long waited = GraphManager.waitForStores(() -> answers[Math.min(calls.getAndIncrement(),
-                                                         answers.length - 1)],
-                                  3, 60, 1);
+        long waited = GraphManager.waitForCluster(deadline -> {
+            int i = Math.min(calls.getAndIncrement(), answers.size() - 1);
+            return answers.get(i);
+        }, 60, 1);
         Assert.assertEquals(4, calls.get());
         Assert.assertTrue("waited " + waited, waited >= 2 && waited <= 5);
     }
 
     @Test
-    public void testTimeoutNamesTheOption() {
-        AtomicInteger calls = new AtomicInteger();
+    public void testBlackholedPdStaysWithinTheBudget() {
+        // every call hangs for its whole deadline (a black-holed PD): the
+        // deadline handed to the probe must shrink with the budget, and the
+        // total wait must not exceed the timeout by more than one poll
+        List<Long> deadlines = new ArrayList<>();
+        long start = System.currentTimeMillis();
         Assert.assertThrows(HugeException.class, () -> {
-            GraphManager.waitForStores(() -> {
-                calls.incrementAndGet();
-                return 1;
-            }, 3, 2, 1);
+            GraphManager.waitForCluster(deadline -> {
+                deadlines.add(deadline);
+                try {
+                    Thread.sleep(deadline);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                }
+                return answer(Readiness.UNREACHABLE, "pd:8686: DEADLINE_EXCEEDED");
+            }, 3, 1);
         }, e -> {
-            Assert.assertContains("Timed out after 2s", e.getMessage());
-            Assert.assertContains("3 active store(s)", e.getMessage());
-            Assert.assertContains("(1 registered)", e.getMessage());
+            Assert.assertContains("Timed out after 3s", e.getMessage());
+            Assert.assertContains("DEADLINE_EXCEEDED", e.getMessage());
             Assert.assertContains("pd.stores_wait_timeout", e.getMessage());
         });
-        Assert.assertTrue("polls " + calls.get(), calls.get() >= 2);
+        long elapsed = System.currentTimeMillis() - start;
+        Assert.assertTrue("elapsed " + elapsed, elapsed < 5000);
+        Assert.assertFalse(deadlines.isEmpty());
+        for (long d : deadlines) {
+            Assert.assertTrue("deadline " + d, d > 0 && d <= 1000);
+        }
+    }
+
+    @Test
+    public void testTimeoutKeepsPdsLastMessage() {
+        Assert.assertThrows(HugeException.class, () -> {
+            GraphManager.waitForCluster(deadline -> answer(
+                    Readiness.NOT_READY,
+                    "Cluster_Not_Ready: The number of active stores is 1, " +
+                    "less than pd.initial-store-count:3"), 2, 1);
+        }, e -> {
+            Assert.assertContains("less than pd.initial-store-count:3",
+                                  e.getMessage());
+            Assert.assertContains("pd.stores_wait_timeout", e.getMessage());
+        });
     }
 }
