@@ -263,9 +263,13 @@ public class StandardHugeGraph implements HugeGraph {
             throw new HugeException(message);
         }
 
-        if (isHstore()) {
+        if (isHstore() && !MetaManager.instance().isReady()) {
+            // Fallback for usePD=false: with usePD=true the server has already
+            // connected the MetaManager under ServerOptions.CLUSTER (the meta
+            // keys are prefixed with the cluster name)
             // TODO: parameterize the remaining configurations
-            MetaManager.instance().connect("hg", MetaManager.MetaDriverType.PD,
+            MetaManager.instance().connect(config.get(CoreOptions.PD_CLUSTER),
+                                           MetaManager.MetaDriverType.PD,
                                            "ca", "ca", "ca",
                                            config.get(CoreOptions.PD_PEERS));
         }
