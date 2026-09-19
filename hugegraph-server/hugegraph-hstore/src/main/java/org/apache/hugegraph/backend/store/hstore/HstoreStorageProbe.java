@@ -195,10 +195,15 @@ public final class HstoreStorageProbe {
         }, HstoreStorageProbe::pingScanState, timeoutMs, EXECUTOR);
     }
 
-    /** Shut down the channels of addresses PD no longer lists (replaced Stores). */
+    /**
+     * Shut down the channels of addresses PD no longer lists (replaced
+     * Stores). An empty answer is ignored, the same rule KnownStores.update
+     * applies: the pings keep using the last known Stores, so their channels
+     * must stay open.
+     */
     static void pruneChannels(Map<String, ManagedChannel> channels,
                               List<Metapb.Store> stores) {
-        if (stores == null) {
+        if (stores == null || stores.isEmpty()) {
             return;
         }
         Set<String> live = new HashSet<>();

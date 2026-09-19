@@ -381,5 +381,9 @@ public class HstoreStorageProbeTest {
         Assert.assertTrue(gone.shut);
         HstoreStorageProbe.pruneChannels(channels, null);
         Assert.assertEquals("a failed listing prunes nothing", 1, channels.size());
+        HstoreStorageProbe.pruneChannels(channels, Collections.emptyList());
+        Assert.assertEquals("an empty listing keeps the channels the pings still use",
+                            1, channels.size());
+        Assert.assertFalse(kept.shut);
     }
 }
