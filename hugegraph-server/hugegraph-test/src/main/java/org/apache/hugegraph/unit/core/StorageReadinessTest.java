@@ -86,8 +86,9 @@ public class StorageReadinessTest {
         };
         Map<String, Object> body = StorageReadiness.check(probe, 1000L, 0L);
         Assert.assertFalse(StorageReadiness.isReady(body));
-        Assert.assertContains("probe failed: IllegalStateException", (String) body.get("reason"));
-        Assert.assertContains("has not been opened", (String) body.get("reason"));
+        Assert.assertEquals("probe failed: IllegalStateException", body.get("reason"));
+        // the endpoint is unauthenticated: no raw message in the body
+        Assert.assertFalse(body.toString().contains("has not been opened"));
     }
 
     @Test
