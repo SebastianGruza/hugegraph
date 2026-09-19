@@ -656,9 +656,11 @@ public class CoreOptions extends OptionHolder {
             "pd.cluster",
             "The cluster name prefixing the meta keys in PD " +
             "('HUGEGRAPH/<cluster>/...') when the graph itself connects the " +
-            "MetaManager, i.e. the server runs with usePD=false; with " +
-            "usePD=true the server connects first with its own 'cluster' " +
-            "option and this value is ignored.",
+            "MetaManager, i.e. the server runs with usePD=false. The prefix " +
+            "is bound once per process: with usePD=true the server binds its " +
+            "own 'cluster' option first, otherwise the first hstore graph " +
+            "opened wins, and a different value on a later graph is ignored " +
+            "with a warning.",
             disallowEmpty(),
             "hg"
     );

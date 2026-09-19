@@ -76,6 +76,9 @@ public class HugeGraphServer {
             // hiding the meta written under the configured cluster
             if (restServerConfig.get(ServerOptions.USE_PD)) {
                 GraphManager.connectMetaManager(restServerConfig);
+                String cluster = MetaManager.instance().cluster();
+                LOG.info("Meta cluster bound to '{}' (keys under HUGEGRAPH/{}/)",
+                         cluster, cluster);
             }
 
             // Prepare GremlinServer (registers GRAPH_CREATE listener) BEFORE

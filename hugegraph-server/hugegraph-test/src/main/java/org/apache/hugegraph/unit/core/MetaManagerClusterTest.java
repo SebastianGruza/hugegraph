@@ -18,6 +18,9 @@
 package org.apache.hugegraph.unit.core;
 
 import java.lang.reflect.Field;
+import java.lang.reflect.Modifier;
+import java.util.HashMap;
+import java.util.Map;
 
 import org.apache.commons.configuration2.PropertiesConfiguration;
 import org.apache.hugegraph.config.CoreOptions;
@@ -42,19 +45,31 @@ import org.mockito.Mockito;
  */
 public class MetaManagerClusterTest {
 
-    private Object originalDriver;
-    private Object originalCluster;
+    /*
+     * connect() also rebuilds every sub-manager of the singleton, so the
+     * whole instance state is snapshotted and restored, not just the driver
+     * and the cluster; the suite must find the singleton as it left it.
+     */
+    private final Map<Field, Object> snapshot = new HashMap<>();
 
     @Before
     public void setup() throws Exception {
-        this.originalDriver = swapField("metaDriver", null);
-        this.originalCluster = swapField("cluster", null);
+        for (Field f : MetaManager.class.getDeclaredFields()) {
+            if (Modifier.isStatic(f.getModifiers())) {
+                continue;
+            }
+            f.setAccessible(true);
+            this.snapshot.put(f, f.get(MetaManager.instance()));
+        }
+        swapField("metaDriver", null);
+        swapField("cluster", null);
     }
 
     @After
     public void teardown() throws Exception {
-        swapField("metaDriver", this.originalDriver);
-        swapField("cluster", this.originalCluster);
+        for (Map.Entry<Field, Object> e : this.snapshot.entrySet()) {
+            e.getKey().set(MetaManager.instance(), e.getValue());
+        }
     }
 
     @Test
@@ -120,6 +135,17 @@ public class MetaManagerClusterTest {
     }
 
     @Test
+    public void testTeardownRestoresTheSubManagers() throws Exception {
+        Field f = MetaManager.class.getDeclaredField("authMetaManager");
+        f.setAccessible(true);
+        Object before = this.snapshot.get(f);
+        connectWithMockDriver("hg-test");
+        Assert.assertNotSame(before, f.get(MetaManager.instance()));
+        teardown();
+        Assert.assertSame(before, f.get(MetaManager.instance()));
+    }
+
+    @Test
     public void testGraphLevelDefaultStaysHg() {
         Assert.assertEquals("hg", CoreOptions.PD_CLUSTER.defaultValue());
     }
@@ -133,12 +159,10 @@ public class MetaManagerClusterTest {
                                        null, null, null, "127.0.0.1:8686");
     }
 
-    private static Object swapField(String field, Object replacement)
-                                    throws Exception {
+    private static void swapField(String field, Object replacement)
+                                  throws Exception {
         Field f = MetaManager.class.getDeclaredField(field);
         f.setAccessible(true);
-        Object previous = f.get(MetaManager.instance());
         f.set(MetaManager.instance(), replacement);
-        return previous;
     }
 }
