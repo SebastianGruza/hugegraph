@@ -117,8 +117,7 @@ public abstract class HstoreStore extends AbstractBackendStore<Session> {
         this.registerMetaHandler(HstoreStorageProbe.META_STORAGE_READINESS, (session, meta, args) -> {
             E.checkArgument(args.length == 1 && args[0] instanceof Number,
                             "Expect the timeout in ms as the only argument");
-            return HstoreStorageProbe.probe(this.namespace + "/" + this.store,
-                                            ((Number) args[0]).longValue());
+            return HstoreStorageProbe.probe(((Number) args[0]).longValue());
         });
         this.registerMetaHandler("mode", (session, meta, args) -> {
             E.checkArgument(args.length == 1,
