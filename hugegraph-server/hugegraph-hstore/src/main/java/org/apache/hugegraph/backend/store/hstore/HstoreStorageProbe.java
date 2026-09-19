@@ -32,12 +32,11 @@ import java.util.concurrent.ExecutorCompletionService;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
-import java.util.concurrent.ThreadFactory;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
-import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
+import org.apache.commons.lang3.concurrent.BasicThreadFactory;
 import org.apache.hugegraph.pd.client.PDClient;
 import org.apache.hugegraph.pd.common.PDException;
 import org.apache.hugegraph.pd.grpc.Metapb;
@@ -71,16 +70,8 @@ public final class HstoreStorageProbe {
     private static final Logger LOG = Log.logger(HstoreStorageProbe.class);
 
     private static final ExecutorService EXECUTOR = Executors.newCachedThreadPool(
-            new ThreadFactory() {
-                private final AtomicInteger seq = new AtomicInteger();
-
-                @Override
-                public Thread newThread(Runnable r) {
-                    Thread t = new Thread(r, "storage-readiness-" + this.seq.incrementAndGet());
-                    t.setDaemon(true);
-                    return t;
-                }
-            });
+            new BasicThreadFactory.Builder().namingPattern("storage-readiness-%d")
+                                            .daemon(true).build());
 
     private static final KnownStores KNOWN = new KnownStores();
     private static final Map<String, ManagedChannel> CHANNELS = new ConcurrentHashMap<>();
@@ -170,81 +161,38 @@ public final class HstoreStorageProbe {
         }
     }
 
-    public static final class Result {
-
-        private final boolean ready;
-        private final String reason;
-        private final int activeStores;
-        private final Long answeredStore;
-        private final Boolean pdReachable;
-        private final long pdAgeMs;
-        private final long storesAgeMs;
-        private final long storeMillis;
-
-        Result(boolean ready, String reason, int activeStores, Long answeredStore,
-               Boolean pdReachable, long pdAgeMs, long storesAgeMs, long storeMillis) {
-            this.ready = ready;
-            this.reason = reason;
-            this.activeStores = activeStores;
-            this.answeredStore = answeredStore;
-            this.pdReachable = pdReachable;
-            this.pdAgeMs = pdAgeMs;
-            this.storesAgeMs = storesAgeMs;
-            this.storeMillis = storeMillis;
-        }
-
-        public boolean ready() {
-            return this.ready;
-        }
-
-        public String reason() {
-            return this.reason;
-        }
-
-        public int activeStores() {
-            return this.activeStores;
-        }
-
-        public Long answeredStore() {
-            return this.answeredStore;
-        }
-
-        public Boolean pdReachable() {
-            return this.pdReachable;
-        }
-
-        public Map<String, Object> toMap() {
-            Map<String, Object> map = new LinkedHashMap<>();
-            map.put("ready", this.ready);
-            map.put("reason", this.reason);
-            map.put("active_stores", this.activeStores);
-            map.put("answered_store", this.answeredStore);
-            map.put("pd_reachable", this.pdReachable);
-            map.put("pd_checked_age_ms", this.pdAgeMs);
-            map.put("stores_age_ms", this.storesAgeMs);
-            map.put("store_millis", this.storeMillis);
-            return map;
-        }
+    /** The unauthenticated body: no addresses, no raw exception text. */
+    private static Map<String, Object> result(boolean ready, String reason, int activeStores,
+                                              Long answeredStore, Boolean pdReachable,
+                                              long pdAgeMs, long storesAgeMs, long storeMillis) {
+        Map<String, Object> map = new LinkedHashMap<>();
+        map.put("ready", ready);
+        map.put("reason", reason);
+        map.put("active_stores", activeStores);
+        map.put("answered_store", answeredStore);
+        map.put("pd_reachable", pdReachable);
+        map.put("pd_checked_age_ms", pdAgeMs);
+        map.put("stores_age_ms", storesAgeMs);
+        map.put("store_millis", storeMillis);
+        return map;
     }
 
     /**
      * Probe through the process-wide PD client and this probe's own plaintext
      * channels to the stores (the store gRPC server takes no credentials).
      *
-     * @param graphName the store-side graph name, kept for the meta handler
      * @param timeoutMs the whole budget for PD plus stores
      */
-    public static Map<String, Object> probe(String graphName, long timeoutMs) {
+    public static Map<String, Object> probe(long timeoutMs) {
         PDClient pd = HstoreSessionsImpl.getDefaultPdClient();
         if (pd == null) {
-            return new Result(false, "pd client not initialised", 0, null,
-                              false, -1L, -1L, 0L).toMap();
+            return result(false, "pd client not initialised", 0, null, false, -1L, -1L, 0L);
         }
         return probe(KNOWN, () -> {
             List<Metapb.Store> stores = pd.getActiveStores();
             pruneChannels(CHANNELS, stores);
             return stores;
-        }, HstoreStorageProbe::pingScanState, timeoutMs, EXECUTOR).toMap();
+        }, HstoreStorageProbe::pingScanState, timeoutMs, EXECUTOR);
     }
 
     /** Shut down the channels of addresses PD no longer lists (replaced Stores). */
@@ -275,8 +223,9 @@ public final class HstoreStorageProbe {
                         .getScanState(SubStateReq.getDefaultInstance());
     }
 
-    public static Result probe(KnownStores known, StoreLister lister, StorePinger pinger,
-                               long timeoutMs, ExecutorService executor) {
+    public static Map<String, Object> probe(KnownStores known, StoreLister lister,
+                                            StorePinger pinger, long timeoutMs,
+                                            ExecutorService executor) {
         E.checkArgument(timeoutMs > 0, "The probe timeout must be > 0, but got %s", timeoutMs);
         long deadline = System.currentTimeMillis() + timeoutMs;
 
@@ -292,15 +241,15 @@ public final class HstoreStorageProbe {
                 stores = await(refresh, deadline);
                 pdReachable = true;
             } catch (TimeoutException e) {
-                return new Result(false, "no store list known and pd did not answer within " +
+                return result(false, "no store list known and pd did not answer within " +
                                          timeoutMs + " ms", 0, null, false, -1L, -1L, 0L);
             } catch (Exception e) {
                 LOG.warn("Storage readiness: no store list known and pd failed", e);
-                return new Result(false, "no store list known and pd failed: " + category(e),
+                return result(false, "no store list known and pd failed: " + category(e),
                                   0, null, false, known.pdAgeMs(), -1L, 0L);
             }
             if (stores.isEmpty()) {
-                return new Result(false, "no active store registered in pd",
+                return result(false, "no active store registered in pd",
                                   0, null, true, known.pdAgeMs(), known.ageMs(), 0L);
             }
         }
@@ -319,7 +268,7 @@ public final class HstoreStorageProbe {
             }));
         }
         List<String> failures = new ArrayList<>();
-        Result result = null;
+        Map<String, Object> result = null;
         try {
             for (int done = 0; done < stores.size() && result == null; done++) {
                 long remaining = deadline - System.currentTimeMillis();
@@ -340,7 +289,7 @@ public final class HstoreStorageProbe {
                 }
                 try {
                     Metapb.Store store = first.get();
-                    result = new Result(true, "ok", stores.size(), store.getId(),
+                    result = result(true, "ok", stores.size(), store.getId(),
                                         pdState(refresh, known, pdReachable), known.pdAgeMs(),
                                         known.ageMs(), elapsed(storeStart));
                 } catch (ExecutionException e) {
@@ -361,7 +310,7 @@ public final class HstoreStorageProbe {
         if (result != null) {
             return result;
         }
-        return new Result(false, "none of " + stores.size() + " known store(s) answered: " +
+        return result(false, "none of " + stores.size() + " known store(s) answered: " +
                                  String.join("; ", failures),
                           stores.size(), null, pdState(refresh, known, pdReachable),
                           known.pdAgeMs(), known.ageMs(), elapsed(storeStart));
