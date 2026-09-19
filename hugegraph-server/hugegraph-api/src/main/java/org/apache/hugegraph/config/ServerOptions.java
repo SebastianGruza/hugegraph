@@ -214,10 +214,12 @@ public class ServerOptions extends OptionHolder {
     public static final ConfigOption<Integer> READINESS_TIMEOUT =
             new ConfigOption<>(
                     "readiness.timeout",
-                    "The whole time budget in ms of one GET /readiness probe " +
-                    "(PD call plus one cheap call to an active Store); a PD " +
-                    "or Store that does not answer within it makes the " +
-                    "server report not ready.",
+                    "The whole time budget in ms of one GET /readiness probe: " +
+                    "one cheap call to every known Store in parallel, the " +
+                    "first answer wins; the PD call that refreshes the Store " +
+                    "list runs in the background and is only waited for " +
+                    "before the first list is known. No Store answering " +
+                    "within the budget makes the server report not ready.",
                     rangeInt(100, 60000),
                     1000
             );
@@ -227,8 +229,8 @@ public class ServerOptions extends OptionHolder {
                     "readiness.cache_ttl",
                     "How many ms a GET /readiness result is reused before " +
                     "the storage is probed again, so that several probes " +
-                    "(Kubernetes, load balancers) cost one PD and one Store " +
-                    "call per interval; 0 probes on every request.",
+                    "(Kubernetes, load balancers) cost one round of Store " +
+                    "calls per interval; 0 probes on every request.",
                     rangeInt(0, 60000),
                     2000
             );

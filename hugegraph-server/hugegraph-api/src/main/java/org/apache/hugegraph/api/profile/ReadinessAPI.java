@@ -37,10 +37,11 @@ import jakarta.ws.rs.core.Context;
 import jakarta.ws.rs.core.Response;
 
 /**
- * Storage-aware readiness for Kubernetes and load balancers: 200 while this
- * server can serve graph traffic, 503 while PD or every Store is unreachable
- * from it. Unauthenticated, like /versions, so that an httpGet probe needs
- * no credential; the body carries no addresses.
+ * Storage-aware readiness for Kubernetes and load balancers: 200 while at
+ * least one known Store answers this server, 503 while none does (or, before
+ * any Store list is known, while PD does not answer). Unauthenticated, like
+ * /versions, so that an httpGet probe needs no credential; the body carries
+ * no addresses and no raw exception text.
  */
 @Path("readiness")
 @Singleton

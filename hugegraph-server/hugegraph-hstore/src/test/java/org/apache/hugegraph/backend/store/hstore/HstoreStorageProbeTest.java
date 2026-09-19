@@ -23,15 +23,23 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.stream.Collectors;
 
 import org.apache.hugegraph.backend.store.hstore.HstoreStorageProbe.KnownStores;
 import org.apache.hugegraph.backend.store.hstore.HstoreStorageProbe.Result;
+import org.apache.hugegraph.pd.common.PDException;
 import org.apache.hugegraph.pd.grpc.Metapb;
 import org.junit.AfterClass;
 import org.junit.Assert;
 import org.junit.Test;
+
+import io.grpc.CallOptions;
+import io.grpc.ClientCall;
+import io.grpc.ManagedChannel;
+import io.grpc.MethodDescriptor;
+import io.grpc.Status;
 
 public class HstoreStorageProbeTest {
 
@@ -214,7 +222,8 @@ public class HstoreStorageProbeTest {
                                             refused, BUDGET, EXECUTOR);
         Assert.assertFalse(r.ready());
         Assert.assertTrue(r.reason(), r.reason().startsWith("none of 2 known store(s) answered"));
-        Assert.assertTrue(r.reason(), r.reason().contains("connection refused"));
+        Assert.assertTrue(r.reason(), r.reason().contains("a store failed: IllegalStateException"));
+        Assert.assertFalse(r.reason(), r.reason().contains("connection refused"));
         Assert.assertNull(r.answeredStore());
     }
 
@@ -260,5 +269,113 @@ public class HstoreStorageProbeTest {
             HstoreStorageProbe.probe(new KnownStores(), Collections::emptyList, ANSWERS,
                                      0L, EXECUTOR);
         });
+    }
+
+    /**
+     * The body is served without authentication: PD peers from the PD client's
+     * "PD unreachable, pd.peers=..." and Store host names from gRPC's "Unable
+     * to resolve host ..." must not reach it, only a category.
+     */
+    @Test
+    public void testReasonCarriesNoPdPeersNorStoreHosts() {
+        Result pd = HstoreStorageProbe.probe(new KnownStores(), () -> {
+            throw new PDException(1, "PD unreachable, pd.peers=pd-0.internal:8686,pd-1.internal:8686");
+        }, ANSWERS, BUDGET, EXECUTOR);
+        Assert.assertFalse(pd.ready());
+        Assert.assertEquals("no store list known and pd failed: pd unreachable", pd.reason());
+
+        HstoreStorageProbe.StorePinger unresolved = (store, timeout) -> {
+            throw Status.UNAVAILABLE.withDescription(
+                    "Unable to resolve host store-0.hugegraph-store.svc").asRuntimeException();
+        };
+        Result st = HstoreStorageProbe.probe(knowing(1L), () -> stores(1L), unresolved,
+                                             BUDGET, EXECUTOR);
+        Assert.assertFalse(st.ready());
+        Assert.assertTrue(st.reason(), st.reason().contains("a store failed: UNAVAILABLE"));
+        String all = pd.toMap().toString() + st.toMap().toString();
+        Assert.assertFalse(all, all.contains("internal") || all.contains("svc") ||
+                                all.contains("8686"));
+    }
+
+    /** A hung PD parks one refresh, not one per probe. */
+    @Test
+    public void testRefreshIsSingleFlight() throws Exception {
+        AtomicInteger calls = new AtomicInteger();
+        KnownStores known = knowing(1L);
+        HstoreStorageProbe.StoreLister hung = () -> {
+            calls.incrementAndGet();
+            Thread.sleep(3_000L);
+            return stores(1L, 2L);
+        };
+        for (int i = 0; i < 5; i++) {
+            Assert.assertTrue(HstoreStorageProbe.probe(known, hung, ANSWERS, BUDGET,
+                                                       EXECUTOR).ready());
+        }
+        Thread.sleep(200L);
+        Assert.assertEquals(1, calls.get());
+        for (int i = 0; i < 40 && known.stores().size() != 2; i++) {
+            Thread.sleep(100L);
+        }
+        Assert.assertEquals(2, known.stores().size());
+        HstoreStorageProbe.probe(known, hung, ANSWERS, BUDGET, EXECUTOR);
+        Thread.sleep(100L);
+        Assert.assertEquals("a finished refresh allows a new one", 2, calls.get());
+    }
+
+    private static final class FakeChannel extends ManagedChannel {
+
+        boolean shut;
+
+        @Override
+        public ManagedChannel shutdown() {
+            this.shut = true;
+            return this;
+        }
+
+        @Override
+        public boolean isShutdown() {
+            return this.shut;
+        }
+
+        @Override
+        public boolean isTerminated() {
+            return this.shut;
+        }
+
+        @Override
+        public ManagedChannel shutdownNow() {
+            return this.shutdown();
+        }
+
+        @Override
+        public boolean awaitTermination(long timeout, TimeUnit unit) {
+            return true;
+        }
+
+        @Override
+        public <Q, P> ClientCall<Q, P> newCall(MethodDescriptor<Q, P> method,
+                                               CallOptions options) {
+            throw new UnsupportedOperationException();
+        }
+
+        @Override
+        public String authority() {
+            return "fake";
+        }
+    }
+
+    @Test
+    public void testChannelsOfReplacedStoresAreShutDown() {
+        Map<String, ManagedChannel> channels = new java.util.concurrent.ConcurrentHashMap<>();
+        FakeChannel kept = new FakeChannel();
+        FakeChannel gone = new FakeChannel();
+        channels.put("10.0.0.1:8500", kept);
+        channels.put("10.0.0.9:8500", gone);
+        HstoreStorageProbe.pruneChannels(channels, stores(1L, 2L));
+        Assert.assertEquals(1, channels.size());
+        Assert.assertFalse(kept.shut);
+        Assert.assertTrue(gone.shut);
+        HstoreStorageProbe.pruneChannels(channels, null);
+        Assert.assertEquals("a failed listing prunes nothing", 1, channels.size());
     }
 }
