@@ -27,6 +27,7 @@ import org.apache.hugegraph.config.CoreOptions;
 import org.apache.hugegraph.config.HugeConfig;
 import org.apache.hugegraph.config.ServerOptions;
 import org.apache.hugegraph.core.GraphManager;
+import org.apache.hugegraph.event.EventHub;
 import org.apache.hugegraph.meta.MetaDriver;
 import org.apache.hugegraph.meta.MetaManager;
 import org.apache.hugegraph.testutil.Assert;
@@ -114,7 +115,7 @@ public class MetaManagerClusterTest {
     public void testServerConnectDetectsGraphLevelCluster() throws Exception {
         connectWithMockDriver(CoreOptions.PD_CLUSTER.defaultValue());
 
-        HugeConfig conf = new HugeConfig(new PropertiesConfiguration());
+        HugeConfig conf = serverConfig(true);
         Assert.assertEquals("hg-test", conf.get(ServerOptions.CLUSTER));
         Assert.assertThrows(IllegalStateException.class, () -> {
             GraphManager.connectMetaManager(conf);
@@ -128,10 +129,47 @@ public class MetaManagerClusterTest {
     public void testServerConnectIsIdempotentUnderTheConfiguredCluster()
                                                        throws Exception {
         connectWithMockDriver("hg-test");
-        HugeConfig conf = new HugeConfig(new PropertiesConfiguration());
+        HugeConfig conf = serverConfig(true);
         GraphManager.connectMetaManager(conf);
         GraphManager.connectMetaManager(conf);
         Assert.assertEquals("hg-test", MetaManager.instance().cluster());
+    }
+
+    /**
+     * With usePD=false the server binds no cluster of its own: an hstore graph
+     * opened by HugeGremlinServer.prepare() binds the MetaManager under its
+     * 'pd.cluster' (default 'hg'), and nothing on the server side may check
+     * that binding against the server's 'cluster' default ('hg-test').
+     */
+    @Test
+    public void testUsePdFalseLeavesTheGraphLevelBindingAlone() throws Exception {
+        connectWithMockDriver(CoreOptions.PD_CLUSTER.defaultValue());
+
+        HugeConfig conf = serverConfig(false);
+        Assert.assertFalse(conf.get(ServerOptions.USE_PD));
+        Assert.assertEquals("hg-test", conf.get(ServerOptions.CLUSTER));
+        GraphManager.connectMetaManager(conf);
+        Assert.assertEquals("hg", MetaManager.instance().cluster());
+    }
+
+    /**
+     * The same on the real startup path: a GraphManager built with usePD=false
+     * after a graph already bound 'hg' must construct without touching the
+     * binding (initMetaManager() only runs from loadMetaFromPD(), i.e. with
+     * usePD=true).
+     */
+    @Test
+    public void testGraphManagerStartupWithUsePdFalseKeepsTheGraphBinding()
+                                                                 throws Exception {
+        connectWithMockDriver(CoreOptions.PD_CLUSTER.defaultValue());
+
+        HugeConfig conf = serverConfig(false);
+        GraphManager manager = new GraphManager(conf, new EventHub("cluster-test"));
+        try {
+            Assert.assertEquals("hg", MetaManager.instance().cluster());
+        } finally {
+            manager.close();
+        }
     }
 
     @Test
@@ -148,6 +186,14 @@ public class MetaManagerClusterTest {
     @Test
     public void testGraphLevelDefaultStaysHg() {
         Assert.assertEquals("hg", CoreOptions.PD_CLUSTER.defaultValue());
+    }
+
+    /** rest-server.properties as the server sees it, with usePD set explicitly. */
+    private static HugeConfig serverConfig(boolean usePd) {
+        PropertiesConfiguration props = new PropertiesConfiguration();
+        // HugeConfig.get() casts stored values, it does not parse strings here
+        props.setProperty(ServerOptions.USE_PD.name(), Boolean.valueOf(usePd));
+        return new HugeConfig(props);
     }
 
     private static void connectWithMockDriver(String cluster) throws Exception {

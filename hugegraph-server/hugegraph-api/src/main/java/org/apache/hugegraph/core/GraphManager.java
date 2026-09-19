@@ -742,9 +742,15 @@ public final class GraphManager {
      * the cluster, so the server would otherwise read an empty tree. Called
      * from HugeGraphServer before any graph is opened, because opening an
      * hstore graph connects the MetaManager with the graph's 'pd.cluster'
-     * (default 'hg') if nothing connected it yet.
+     * (default 'hg') if nothing connected it yet. With usePD=false the server
+     * has no cluster of its own and the graph-level binding is the only one,
+     * so this is a no-op there: the check must never apply to a prefix the
+     * server did not bind.
      */
     public static void connectMetaManager(HugeConfig conf) {
+        if (!conf.get(ServerOptions.USE_PD)) {
+            return;
+        }
         String cluster = conf.get(ServerOptions.CLUSTER);
         String endpoints = conf.get(ServerOptions.PD_PEERS);
         String ca = null;
