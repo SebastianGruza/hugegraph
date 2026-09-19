@@ -28,7 +28,6 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.stream.Collectors;
 
 import org.apache.hugegraph.backend.store.hstore.HstoreStorageProbe.KnownStores;
-import org.apache.hugegraph.backend.store.hstore.HstoreStorageProbe.Result;
 import org.apache.hugegraph.pd.common.PDException;
 import org.apache.hugegraph.pd.grpc.Metapb;
 import org.junit.AfterClass;
@@ -70,15 +69,19 @@ public class HstoreStorageProbeTest {
     private static final HstoreStorageProbe.StorePinger ANSWERS = (store, timeout) -> {
     };
 
+    private static String reason(Map<String, Object> body) {
+        return (String) body.get("reason");
+    }
+
     @Test
     public void testReadyWhenPdAndOneStoreAnswer() {
-        Result r = HstoreStorageProbe.probe(new KnownStores(), () -> stores(1L, 2L, 3L),
+        Map<String, Object> r = HstoreStorageProbe.probe(new KnownStores(), () -> stores(1L, 2L, 3L),
                                             ANSWERS, BUDGET, EXECUTOR);
-        Assert.assertTrue(r.reason(), r.ready());
-        Assert.assertEquals(3, r.activeStores());
-        Assert.assertNotNull(r.answeredStore());
-        Assert.assertEquals(Boolean.TRUE, r.pdReachable());
-        Assert.assertEquals("ok", r.reason());
+        Assert.assertTrue(reason(r), Boolean.TRUE.equals(r.get("ready")));
+        Assert.assertEquals(3, r.get("active_stores"));
+        Assert.assertNotNull(r.get("answered_store"));
+        Assert.assertEquals(Boolean.TRUE, r.get("pd_reachable"));
+        Assert.assertEquals("ok", reason(r));
     }
 
     @Test
@@ -90,10 +93,10 @@ public class HstoreStorageProbeTest {
                 throw new IllegalStateException("UNAVAILABLE");
             }
         };
-        Result r = HstoreStorageProbe.probe(knowing(1L, 2L, 3L), () -> stores(1L, 2L, 3L),
+        Map<String, Object> r = HstoreStorageProbe.probe(knowing(1L, 2L, 3L), () -> stores(1L, 2L, 3L),
                                             onlyThird, BUDGET, EXECUTOR);
-        Assert.assertTrue(r.reason(), r.ready());
-        Assert.assertEquals(Long.valueOf(3L), r.answeredStore());
+        Assert.assertTrue(reason(r), Boolean.TRUE.equals(r.get("ready")));
+        Assert.assertEquals(3L, r.get("answered_store"));
         // the pings run in parallel; the failing ones may or may not have run
         Assert.assertTrue(pings.get() >= 1 && pings.get() <= 3);
     }
@@ -111,35 +114,35 @@ public class HstoreStorageProbeTest {
             }
         };
         long start = System.currentTimeMillis();
-        Result r = HstoreStorageProbe.probe(knowing(1L, 2L, 3L), () -> stores(1L, 2L, 3L),
+        Map<String, Object> r = HstoreStorageProbe.probe(knowing(1L, 2L, 3L), () -> stores(1L, 2L, 3L),
                                             onlySecondAnswers, BUDGET, EXECUTOR);
         long took = System.currentTimeMillis() - start;
-        Assert.assertTrue(r.reason(), r.ready());
-        Assert.assertEquals(Long.valueOf(2L), r.answeredStore());
+        Assert.assertTrue(reason(r), Boolean.TRUE.equals(r.get("ready")));
+        Assert.assertEquals(2L, r.get("answered_store"));
         Assert.assertTrue("took " + took, took < BUDGET);
     }
 
     @Test
     public void testFirstProbeWithoutKnownStoresNeedsPd() {
-        Result r = HstoreStorageProbe.probe(new KnownStores(), () -> {
+        Map<String, Object> r = HstoreStorageProbe.probe(new KnownStores(), () -> {
             throw new IllegalStateException("UNAVAILABLE: io exception");
         }, ANSWERS, BUDGET, EXECUTOR);
-        Assert.assertFalse(r.ready());
-        Assert.assertTrue(r.reason(), r.reason().startsWith(
+        Assert.assertFalse(Boolean.TRUE.equals(r.get("ready")));
+        Assert.assertTrue(reason(r), reason(r).startsWith(
                 "no store list known and pd failed: IllegalStateException"));
-        Assert.assertEquals(Boolean.FALSE, r.pdReachable());
+        Assert.assertEquals(Boolean.FALSE, r.get("pd_reachable"));
     }
 
     @Test
     public void testFirstProbeWithHungPdStaysWithinBudget() {
         long start = System.currentTimeMillis();
-        Result r = HstoreStorageProbe.probe(new KnownStores(), () -> {
+        Map<String, Object> r = HstoreStorageProbe.probe(new KnownStores(), () -> {
             Thread.sleep(10_000L);
             return stores(1L);
         }, ANSWERS, BUDGET, EXECUTOR);
         long took = System.currentTimeMillis() - start;
-        Assert.assertFalse(r.ready());
-        Assert.assertTrue(r.reason(), r.reason().contains("pd did not answer within"));
+        Assert.assertFalse(Boolean.TRUE.equals(r.get("ready")));
+        Assert.assertTrue(reason(r), reason(r).contains("pd did not answer within"));
         Assert.assertTrue("took " + took, took < BUDGET * 4);
     }
 
@@ -149,25 +152,25 @@ public class HstoreStorageProbeTest {
      */
     @Test
     public void testKnownStoresKeepTheServerReadyWhilePdIsDown() {
-        Result r = HstoreStorageProbe.probe(knowing(1L, 2L), () -> {
+        Map<String, Object> r = HstoreStorageProbe.probe(knowing(1L, 2L), () -> {
             throw new IllegalStateException("PD unreachable");
         }, ANSWERS, BUDGET, EXECUTOR);
-        Assert.assertTrue(r.reason(), r.ready());
-        Assert.assertEquals(2, r.activeStores());
+        Assert.assertTrue(reason(r), Boolean.TRUE.equals(r.get("ready")));
+        Assert.assertEquals(2, r.get("active_stores"));
     }
 
     @Test
     public void testHungPdDoesNotDelayAProbeWithKnownStores() {
         long start = System.currentTimeMillis();
-        Result r = HstoreStorageProbe.probe(knowing(1L, 2L), () -> {
+        Map<String, Object> r = HstoreStorageProbe.probe(knowing(1L, 2L), () -> {
             Thread.sleep(10_000L);
             return stores(1L, 2L);
         }, ANSWERS, BUDGET, EXECUTOR);
         long took = System.currentTimeMillis() - start;
-        Assert.assertTrue(r.reason(), r.ready());
+        Assert.assertTrue(reason(r), Boolean.TRUE.equals(r.get("ready")));
         // the refresh is still pending, so the outcome of the last finished
         // one (the seed) is reported
-        Assert.assertEquals(Boolean.TRUE, r.pdReachable());
+        Assert.assertEquals(Boolean.TRUE, r.get("pd_reachable"));
         Assert.assertTrue("took " + took, took < BUDGET);
     }
 
@@ -181,13 +184,13 @@ public class HstoreStorageProbeTest {
             Thread.sleep(20L);
         }
         Assert.assertEquals(Boolean.FALSE, known.pdOk());
-        Result r = HstoreStorageProbe.probe(known, () -> {
+        Map<String, Object> r = HstoreStorageProbe.probe(known, () -> {
             Thread.sleep(10_000L);
             return stores(1L);
         }, ANSWERS, BUDGET, EXECUTOR);
-        Assert.assertTrue(r.ready());
-        Assert.assertEquals(Boolean.FALSE, r.pdReachable());
-        Assert.assertTrue(r.toMap().containsKey("pd_checked_age_ms"));
+        Assert.assertTrue(Boolean.TRUE.equals(r.get("ready")));
+        Assert.assertEquals(Boolean.FALSE, r.get("pd_reachable"));
+        Assert.assertTrue(r.containsKey("pd_checked_age_ms"));
     }
 
     @Test
@@ -204,10 +207,10 @@ public class HstoreStorageProbeTest {
     @Test
     public void testEmptyPdAnswerIsNotReadyAndKeepsTheOldList() {
         KnownStores fresh = new KnownStores();
-        Result r = HstoreStorageProbe.probe(fresh, Collections::emptyList, ANSWERS,
+        Map<String, Object> r = HstoreStorageProbe.probe(fresh, Collections::emptyList, ANSWERS,
                                             BUDGET, EXECUTOR);
-        Assert.assertFalse(r.ready());
-        Assert.assertEquals("no active store registered in pd", r.reason());
+        Assert.assertFalse(Boolean.TRUE.equals(r.get("ready")));
+        Assert.assertEquals("no active store registered in pd", reason(r));
         KnownStores known = knowing(1L);
         HstoreStorageProbe.probe(known, Collections::emptyList, ANSWERS, BUDGET, EXECUTOR);
         Assert.assertEquals(1, known.stores().size());
@@ -218,13 +221,13 @@ public class HstoreStorageProbeTest {
         HstoreStorageProbe.StorePinger refused = (store, timeout) -> {
             throw new IllegalStateException("connection refused");
         };
-        Result r = HstoreStorageProbe.probe(knowing(7L, 8L), () -> stores(7L, 8L),
+        Map<String, Object> r = HstoreStorageProbe.probe(knowing(7L, 8L), () -> stores(7L, 8L),
                                             refused, BUDGET, EXECUTOR);
-        Assert.assertFalse(r.ready());
-        Assert.assertTrue(r.reason(), r.reason().startsWith("none of 2 known store(s) answered"));
-        Assert.assertTrue(r.reason(), r.reason().contains("a store failed: IllegalStateException"));
-        Assert.assertFalse(r.reason(), r.reason().contains("connection refused"));
-        Assert.assertNull(r.answeredStore());
+        Assert.assertFalse(Boolean.TRUE.equals(r.get("ready")));
+        Assert.assertTrue(reason(r), reason(r).startsWith("none of 2 known store(s) answered"));
+        Assert.assertTrue(reason(r), reason(r).contains("a store failed: IllegalStateException"));
+        Assert.assertFalse(reason(r), reason(r).contains("connection refused"));
+        Assert.assertNull(r.get("answered_store"));
     }
 
     @Test
@@ -233,11 +236,11 @@ public class HstoreStorageProbeTest {
             Thread.sleep(10_000L);
         };
         long start = System.currentTimeMillis();
-        Result r = HstoreStorageProbe.probe(knowing(1L, 2L, 3L), () -> stores(1L, 2L, 3L),
+        Map<String, Object> r = HstoreStorageProbe.probe(knowing(1L, 2L, 3L), () -> stores(1L, 2L, 3L),
                                             hung, BUDGET, EXECUTOR);
         long took = System.currentTimeMillis() - start;
-        Assert.assertFalse(r.ready());
-        Assert.assertTrue(r.reason(), r.reason().contains("did not answer within"));
+        Assert.assertFalse(Boolean.TRUE.equals(r.get("ready")));
+        Assert.assertTrue(reason(r), reason(r).contains("did not answer within"));
         Assert.assertTrue("took " + took, took < BUDGET * 4);
     }
 
@@ -254,7 +257,7 @@ public class HstoreStorageProbeTest {
     @Test
     public void testMapCarriesNoAddresses() {
         Map<String, Object> map = HstoreStorageProbe.probe(knowing(1L), () -> stores(1L),
-                                                           ANSWERS, BUDGET, EXECUTOR).toMap();
+                                                           ANSWERS, BUDGET, EXECUTOR);
         Assert.assertEquals(true, map.get("ready"));
         Assert.assertEquals(1, map.get("active_stores"));
         Assert.assertEquals(1L, map.get("answered_store"));
@@ -278,21 +281,21 @@ public class HstoreStorageProbeTest {
      */
     @Test
     public void testReasonCarriesNoPdPeersNorStoreHosts() {
-        Result pd = HstoreStorageProbe.probe(new KnownStores(), () -> {
+        Map<String, Object> pd = HstoreStorageProbe.probe(new KnownStores(), () -> {
             throw new PDException(1, "PD unreachable, pd.peers=pd-0.internal:8686,pd-1.internal:8686");
         }, ANSWERS, BUDGET, EXECUTOR);
-        Assert.assertFalse(pd.ready());
-        Assert.assertEquals("no store list known and pd failed: pd unreachable", pd.reason());
+        Assert.assertFalse(Boolean.TRUE.equals(pd.get("ready")));
+        Assert.assertEquals("no store list known and pd failed: pd unreachable", reason(pd));
 
         HstoreStorageProbe.StorePinger unresolved = (store, timeout) -> {
             throw Status.UNAVAILABLE.withDescription(
                     "Unable to resolve host store-0.hugegraph-store.svc").asRuntimeException();
         };
-        Result st = HstoreStorageProbe.probe(knowing(1L), () -> stores(1L), unresolved,
+        Map<String, Object> st = HstoreStorageProbe.probe(knowing(1L), () -> stores(1L), unresolved,
                                              BUDGET, EXECUTOR);
-        Assert.assertFalse(st.ready());
-        Assert.assertTrue(st.reason(), st.reason().contains("a store failed: UNAVAILABLE"));
-        String all = pd.toMap().toString() + st.toMap().toString();
+        Assert.assertFalse(Boolean.TRUE.equals(st.get("ready")));
+        Assert.assertTrue(reason(st), reason(st).contains("a store failed: UNAVAILABLE"));
+        String all = pd.toString() + st.toString();
         Assert.assertFalse(all, all.contains("internal") || all.contains("svc") ||
                                 all.contains("8686"));
     }
@@ -308,8 +311,9 @@ public class HstoreStorageProbeTest {
             return stores(1L, 2L);
         };
         for (int i = 0; i < 5; i++) {
-            Assert.assertTrue(HstoreStorageProbe.probe(known, hung, ANSWERS, BUDGET,
-                                                       EXECUTOR).ready());
+            Assert.assertEquals(Boolean.TRUE, HstoreStorageProbe.probe(known, hung, ANSWERS,
+                                                                       BUDGET, EXECUTOR)
+                                                                .get("ready"));
         }
         Thread.sleep(200L);
         Assert.assertEquals(1, calls.get());
