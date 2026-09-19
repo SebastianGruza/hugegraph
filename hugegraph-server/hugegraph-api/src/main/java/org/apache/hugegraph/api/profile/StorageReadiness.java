@@ -32,9 +32,11 @@ import org.slf4j.Logger;
  * Whether this server can serve graph traffic, for a readiness probe.
  * Graphs on an embedded backend are ready as soon as the REST layer answers.
  * Graphs on hstore are probed through the backend's "storage_readiness"
- * metadata (PD answers and one active Store answers). The storage is shared
- * by every hstore graph of the process, so one graph is probed and the
- * result is reused for a short TTL to keep repeated probes cheap.
+ * metadata: at least one known Store answers a cheap direct call; PD is only
+ * needed until the first Store list is known. The storage is shared by every
+ * hstore graph of the process, so one graph is probed and the result is
+ * reused for a short TTL to keep repeated probes cheap. The body never
+ * carries raw exception text, since the endpoint is unauthenticated.
  */
 public final class StorageReadiness {
 
@@ -93,10 +95,9 @@ public final class StorageReadiness {
             Map<String, Object> result = probe.probe(timeoutMs);
             body.putAll(result);
         } catch (Throwable e) {
-            LOG.debug("Storage readiness probe failed", e);
+            LOG.warn("Storage readiness probe failed", e);
             body.put("ready", false);
-            body.put("reason", "probe failed: " + e.getClass().getSimpleName() +
-                               (e.getMessage() == null ? "" : ": " + e.getMessage()));
+            body.put("reason", "probe failed: " + e.getClass().getSimpleName());
         }
         body.put("cached", false);
         lastResult = body;

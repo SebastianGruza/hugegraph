@@ -19,6 +19,8 @@ package org.apache.hugegraph.backend.store.hstore;
 
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.HashSet;
+import java.util.Set;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -34,30 +36,39 @@ import java.util.concurrent.ThreadFactory;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 
 import org.apache.hugegraph.pd.client.PDClient;
+import org.apache.hugegraph.pd.common.PDException;
 import org.apache.hugegraph.pd.grpc.Metapb;
 import org.apache.hugegraph.store.grpc.state.HgStoreStateGrpc;
 import org.apache.hugegraph.store.grpc.state.SubStateReq;
 import org.apache.hugegraph.util.E;
+import org.apache.hugegraph.util.Log;
+import org.slf4j.Logger;
 
 import io.grpc.ManagedChannel;
 import io.grpc.ManagedChannelBuilder;
+import io.grpc.StatusRuntimeException;
 
 /**
  * Storage-aware readiness of this server, from this server's point of view:
  * at least one Store answers a direct, local, read-only gRPC call
  * (HgStoreState.getScanState, which reads the node's own scan-pool stats and
- * never touches raft). The Store list comes from PD, but PD is refreshed in
- * the background and the last known list is used right away, so a PD that is
- * slow, restarting or down does not change the readiness of a server whose
- * Stores still answer. Every wait is bounded by one shared time budget, so a
- * hung PD or Store turns into "not ready" instead of a hung probe. The result
- * carries no addresses, since it is served without authentication.
+ * never touches raft). The Store list comes from PD, refreshed in the
+ * background (single-flight) while the last known list is used right away, so
+ * PD only matters until the first list is known: a PD that is slow, restarting
+ * or down afterwards does not change the readiness of a server whose Stores
+ * still answer. Every known Store is pinged in parallel and the first answer
+ * wins; every wait is bounded by one shared time budget. The result carries
+ * no addresses and no raw exception text, since it is served without
+ * authentication; the full messages go to the log.
  */
 public final class HstoreStorageProbe {
 
     public static final String META_STORAGE_READINESS = "storage_readiness";
+
+    private static final Logger LOG = Log.logger(HstoreStorageProbe.class);
 
     private static final ExecutorService EXECUTOR = Executors.newCachedThreadPool(
             new ThreadFactory() {
@@ -96,6 +107,8 @@ public final class HstoreStorageProbe {
         private volatile long at;
         private volatile Boolean pdOk;
         private volatile long pdAt;
+        private final AtomicReference<CompletableFuture<List<Metapb.Store>>> inFlight =
+                new AtomicReference<>();
 
         public List<Metapb.Store> stores() {
             return this.stores;
@@ -126,6 +139,34 @@ public final class HstoreStorageProbe {
         public void pdFailed() {
             this.pdOk = false;
             this.pdAt = System.currentTimeMillis();
+        }
+
+        /**
+         * The refresh in flight, or a new one started on `executor`: only one
+         * PD call runs at a time no matter how many probes miss the cache,
+         * so a hung PD parks one thread, not one per probe.
+         */
+        CompletableFuture<List<Metapb.Store>> refresh(StoreLister lister,
+                                                      ExecutorService executor) {
+            CompletableFuture<List<Metapb.Store>> running = this.inFlight.get();
+            if (running != null && !running.isDone()) {
+                return running;
+            }
+            CompletableFuture<List<Metapb.Store>> mine = new CompletableFuture<>();
+            if (!this.inFlight.compareAndSet(running, mine)) {
+                return this.inFlight.get();
+            }
+            executor.execute(() -> {
+                try {
+                    List<Metapb.Store> stores = lister.activeStores();
+                    this.update(stores);
+                    mine.complete(stores == null ? Collections.emptyList() : stores);
+                } catch (Throwable e) {
+                    this.pdFailed();
+                    mine.completeExceptionally(e);
+                }
+            });
+            return mine;
         }
     }
 
@@ -199,8 +240,30 @@ public final class HstoreStorageProbe {
             return new Result(false, "pd client not initialised", 0, null,
                               false, -1L, -1L, 0L).toMap();
         }
-        return probe(KNOWN, pd::getActiveStores, HstoreStorageProbe::pingScanState,
-                     timeoutMs, EXECUTOR).toMap();
+        return probe(KNOWN, () -> {
+            List<Metapb.Store> stores = pd.getActiveStores();
+            pruneChannels(CHANNELS, stores);
+            return stores;
+        }, HstoreStorageProbe::pingScanState, timeoutMs, EXECUTOR).toMap();
+    }
+
+    /** Shut down the channels of addresses PD no longer lists (replaced Stores). */
+    static void pruneChannels(Map<String, ManagedChannel> channels,
+                              List<Metapb.Store> stores) {
+        if (stores == null) {
+            return;
+        }
+        Set<String> live = new HashSet<>();
+        for (Metapb.Store store : stores) {
+            live.add(store.getAddress());
+        }
+        channels.entrySet().removeIf(e -> {
+            if (live.contains(e.getKey())) {
+                return false;
+            }
+            e.getValue().shutdownNow();
+            return true;
+        });
     }
 
     private static void pingScanState(Metapb.Store store, long timeoutMs) {
@@ -217,19 +280,9 @@ public final class HstoreStorageProbe {
         E.checkArgument(timeoutMs > 0, "The probe timeout must be > 0, but got %s", timeoutMs);
         long deadline = System.currentTimeMillis() + timeoutMs;
 
-        // Refresh the store list from PD in the background; whatever PD
-        // answers lands in `known` for this or the next probe
-        CompletableFuture<List<Metapb.Store>> refresh = new CompletableFuture<>();
-        executor.execute(() -> {
-            try {
-                List<Metapb.Store> stores = lister.activeStores();
-                known.update(stores);
-                refresh.complete(stores == null ? Collections.emptyList() : stores);
-            } catch (Throwable e) {
-                known.pdFailed();
-                refresh.completeExceptionally(e);
-            }
-        });
+        // Refresh the store list from PD in the background (single-flight);
+        // whatever PD answers lands in `known` for this or the next probe
+        CompletableFuture<List<Metapb.Store>> refresh = known.refresh(lister, executor);
 
         List<Metapb.Store> stores = known.stores();
         Boolean pdReachable = null;
@@ -242,7 +295,8 @@ public final class HstoreStorageProbe {
                 return new Result(false, "no store list known and pd did not answer within " +
                                          timeoutMs + " ms", 0, null, false, -1L, -1L, 0L);
             } catch (Exception e) {
-                return new Result(false, "no store list known and pd failed: " + message(e),
+                LOG.warn("Storage readiness: no store list known and pd failed", e);
+                return new Result(false, "no store list known and pd failed: " + category(e),
                                   0, null, false, known.pdAgeMs(), -1L, 0L);
             }
             if (stores.isEmpty()) {
@@ -291,7 +345,8 @@ public final class HstoreStorageProbe {
                                         known.ageMs(), elapsed(storeStart));
                 } catch (ExecutionException e) {
                     Throwable cause = e.getCause() != null ? e.getCause() : e;
-                    failures.add("a store failed: " + message(cause));
+                    LOG.debug("Storage readiness: a store ping failed", cause);
+                    failures.add("a store failed: " + category(cause));
                 } catch (InterruptedException e) {
                     Thread.currentThread().interrupt();
                     failures.add("interrupted");
@@ -341,8 +396,18 @@ public final class HstoreStorageProbe {
         return System.currentTimeMillis() - since;
     }
 
-    private static String message(Throwable e) {
-        String msg = e.getMessage();
-        return e.getClass().getSimpleName() + (msg == null ? "" : ": " + msg);
+    /**
+     * A fixed category for the unauthenticated body: the gRPC status code, "pd
+     * unreachable" or the exception class, never the message (it can carry PD
+     * peers and Store host names).
+     */
+    static String category(Throwable e) {
+        if (e instanceof StatusRuntimeException) {
+            return ((StatusRuntimeException) e).getStatus().getCode().name();
+        }
+        if (e instanceof PDException) {
+            return "pd unreachable";
+        }
+        return e.getClass().getSimpleName();
     }
 }
