@@ -103,6 +103,80 @@ public class VertexApiTest extends BaseApiTest {
     }
 
     @Test
+    public void testDecimalJsonNumberLiteralIsExact() throws IOException {
+        createAndAssert(URL_PREFIX + "/schema/propertykeys",
+                        "{" +
+                        "\"name\": \"amount\"," +
+                        "\"data_type\": \"DECIMAL\"," +
+                        "\"cardinality\": \"SINGLE\"," +
+                        "\"check_exist\": false," +
+                        "\"properties\":[]" +
+                        "}", 202);
+        createAndAssert(URL_PREFIX + "/schema/propertykeys",
+                        "{" +
+                        "\"name\": \"weight\"," +
+                        "\"data_type\": \"DOUBLE\"," +
+                        "\"cardinality\": \"SINGLE\"," +
+                        "\"check_exist\": false," +
+                        "\"properties\":[]" +
+                        "}", 202);
+        createAndAssert(URL_PREFIX + "/schema/vertexlabels",
+                        "{" +
+                        "\"primary_keys\":[\"name\"]," +
+                        "\"id_strategy\": \"PRIMARY_KEY\"," +
+                        "\"name\": \"transfer\"," +
+                        "\"properties\":[\"name\", \"amount\", \"weight\"]," +
+                        "\"check_exist\": false," +
+                        "\"nullable_keys\":[\"amount\", \"weight\"]" +
+                        "}");
+
+        // 39 significant digits as a JSON number literal: a double parser
+        // would keep 17 of them; the value is stored and echoed exactly
+        String literal = "12345678901234567890.123456789012345678";
+        String vertex = "{" +
+                        "\"label\":\"transfer\"," +
+                        "\"properties\":{" +
+                        "\"name\":\"t1\"," +
+                        "\"amount\":" + literal + "," +
+                        "\"weight\":" + literal + "}" +
+                        "}";
+        Response r = client().post(PATH, vertex);
+        String content = assertResponseStatus(201, r);
+        Assert.assertContains("\"amount\":\"" + literal + "\"", content);
+        // the DOUBLE key narrows the same literal to a double, as before
+        Assert.assertContains("\"weight\":1.2345678901234567E19", content);
+
+        r = client().get(PATH, String.format("\"%s\"", parseId(content)));
+        content = assertResponseStatus(200, r);
+        Assert.assertContains("\"amount\":\"" + literal + "\"", content);
+
+        // exponent literals are accepted and stored in plain form
+        vertex = "{" +
+                 "\"label\":\"transfer\"," +
+                 "\"properties\":{" +
+                 "\"name\":\"t2\"," +
+                 "\"amount\":1E-18," +
+                 "\"weight\":2.5}" +
+                 "}";
+        r = client().post(PATH, vertex);
+        content = assertResponseStatus(201, r);
+        Assert.assertContains("\"amount\":\"0.000000000000000001\"", content);
+        Assert.assertContains("\"weight\":2.5", content);
+
+        // integer keys still reject a fraction, with the usual message
+        vertex = "{" +
+                 "\"label\":\"person\"," +
+                 "\"properties\":{" +
+                 "\"name\":\"t3\"," +
+                 "\"age\":29.5," +
+                 "\"city\":\"Beijing\"}" +
+                 "}";
+        r = client().post(PATH, vertex);
+        content = assertResponseStatus(400, r);
+        Assert.assertContains("Invalid property value", content);
+    }
+
+    @Test
     public void testBatchUpdateDecimalWithSumStrategy() throws IOException {
         // schema: a decimal balance on an account keyed by name
         createAndAssert(URL_PREFIX + "/schema/propertykeys",
@@ -155,9 +229,10 @@ public class VertexApiTest extends BaseApiTest {
         content = assertResponseStatus(200, r);
         Assert.assertContains("\"balance\":\"" + max + "\"", content);
 
-        // a fraction is sent as a string (a JSON fraction literal would be a
-        // double to the parser); two entries for the same vertex in one
-        // request are combined first, then added to the stored value
+        // a fraction as a string and as a JSON number literal (read as
+        // BigDecimal, see ObjectMapperResolver); two entries for the same
+        // vertex in one request are combined first, then added to the
+        // stored value
         batch = "{" +
                 "\"vertices\":[{" +
                 "\"label\":\"account\"," +
@@ -168,7 +243,7 @@ public class VertexApiTest extends BaseApiTest {
                 "\"label\":\"account\"," +
                 "\"properties\":{" +
                 "\"name\":\"alice\"," +
-                "\"balance\":\"0.000000000000000001\"}" +
+                "\"balance\":0.000000000000000001}" +
                 "}]," +
                 "\"update_strategies\":{\"balance\":\"SUM\"}," +
                 "\"create_if_not_exist\":true" +
