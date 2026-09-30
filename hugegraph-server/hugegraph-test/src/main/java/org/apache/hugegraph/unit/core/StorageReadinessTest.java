@@ -19,6 +19,13 @@ package org.apache.hugegraph.unit.core;
 
 import java.util.LinkedHashMap;
 import java.util.Map;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import org.apache.hugegraph.api.filter.AuthenticationFilter;
@@ -105,6 +112,78 @@ public class StorageReadinessTest {
         first.put("ready", false);
         Map<String, Object> second = StorageReadiness.check(probe, 1000L, 60_000L);
         Assert.assertTrue(StorageReadiness.isReady(second));
+    }
+
+    /**
+     * Concurrent callers with no cache share one probe: the first runs it on
+     * its own thread, the others wait for that result. Nothing holds a
+     * monitor while the probe does its I/O.
+     */
+    @Test
+    public void testConcurrentCallersShareOneProbe() throws Exception {
+        AtomicInteger probes = new AtomicInteger();
+        CountDownLatch started = new CountDownLatch(1);
+        CountDownLatch release = new CountDownLatch(1);
+        StorageReadiness.Probe probe = t -> {
+            probes.incrementAndGet();
+            started.countDown();
+            release.await(5, TimeUnit.SECONDS);
+            return result(true, "ok");
+        };
+        ExecutorService pool = Executors.newFixedThreadPool(4);
+        try {
+            Future<Map<String, Object>> owner = pool.submit(() -> {
+                return StorageReadiness.check(probe, 2000L, 0L);
+            });
+            Assert.assertTrue(started.await(2, TimeUnit.SECONDS));
+            List<Future<Map<String, Object>>> followers = new ArrayList<>();
+            for (int i = 0; i < 3; i++) {
+                followers.add(pool.submit(() -> StorageReadiness.check(probe, 2000L, 0L)));
+            }
+            Thread.sleep(100L);
+            release.countDown();
+            Assert.assertTrue(StorageReadiness.isReady(owner.get(2, TimeUnit.SECONDS)));
+            Assert.assertEquals(false, owner.get().get("cached"));
+            for (Future<Map<String, Object>> f : followers) {
+                Map<String, Object> body = f.get(2, TimeUnit.SECONDS);
+                Assert.assertTrue(StorageReadiness.isReady(body));
+                Assert.assertEquals(true, body.get("shared"));
+            }
+            Assert.assertEquals(1, probes.get());
+        } finally {
+            release.countDown();
+            pool.shutdownNow();
+        }
+    }
+
+    /** A follower waits at most its own timeout for the running probe. */
+    @Test
+    public void testFollowerWaitIsBounded() throws Exception {
+        CountDownLatch started = new CountDownLatch(1);
+        CountDownLatch release = new CountDownLatch(1);
+        StorageReadiness.Probe probe = t -> {
+            started.countDown();
+            release.await(5, TimeUnit.SECONDS);
+            return result(true, "ok");
+        };
+        ExecutorService pool = Executors.newFixedThreadPool(2);
+        try {
+            Future<Map<String, Object>> owner = pool.submit(() -> {
+                return StorageReadiness.check(probe, 5000L, 0L);
+            });
+            Assert.assertTrue(started.await(2, TimeUnit.SECONDS));
+            long start = System.currentTimeMillis();
+            Map<String, Object> follower = StorageReadiness.check(probe, 200L, 0L);
+            long took = System.currentTimeMillis() - start;
+            Assert.assertFalse(StorageReadiness.isReady(follower));
+            Assert.assertEquals("a probe is still running after 200 ms", follower.get("reason"));
+            Assert.assertTrue("took " + took, took >= 200L && took < 2000L);
+            release.countDown();
+            Assert.assertTrue(StorageReadiness.isReady(owner.get(2, TimeUnit.SECONDS)));
+        } finally {
+            release.countDown();
+            pool.shutdownNow();
+        }
     }
 
     /**

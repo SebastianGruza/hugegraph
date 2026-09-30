@@ -62,6 +62,15 @@ import io.grpc.StatusRuntimeException;
  * wins; every wait is bounded by one shared time budget. The result carries
  * no addresses and no raw exception text, since it is served without
  * authentication; the full messages go to the log.
+ * <p>
+ * Scope: ready means this server knows a Store list and reaches at least one
+ * Store over gRPC. A Store whose status RPC answers while its raft or
+ * partition path is broken is not detected. A read through the graph path
+ * was measured as the gate and rejected: a failed read invalidates the
+ * partition cache the queries share (with PD down the data plane then fails
+ * too), and one moving partition stalls every read through that client past
+ * the budget, so a rolling Store restart took every server out of the
+ * Service while the traffic was fine.
  */
 public final class HstoreStorageProbe {
 
