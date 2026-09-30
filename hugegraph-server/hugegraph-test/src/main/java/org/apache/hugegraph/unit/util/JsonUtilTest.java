@@ -349,6 +349,14 @@ public class JsonUtilTest extends BaseUnitTest {
         Assert.assertEquals(0.85d, JsonUtil.fromJson("{\"alpha\":0.85}",
                                                      Map.class).get("alpha"));
 
+        // fromJsonExact: a fraction in an untyped map keeps every digit
+        Map<?, ?> exact = JsonUtil.fromJsonExact(
+                "{\"amount\":12345678901234567890.123456789012345678,\"n\":7}", Map.class);
+        Assert.assertEquals(new BigDecimal("12345678901234567890.123456789012345678"),
+                            exact.get("amount"));
+        Assert.assertEquals(7, exact.get("n"));
+        Assert.assertEquals(0.1d, JsonUtil.fromJson("{\"w\":0.1}", Map.class).get("w"));
+
         // both a string and a number literal are accepted on the way in
         Assert.assertEquals(new BigDecimal("1.5"),
                             JsonUtil.fromJson("\"1.5\"", BigDecimal.class));

@@ -207,6 +207,48 @@ public class VertexApiTest extends BaseApiTest {
                                                 StandardCharsets.UTF_8)));
         content = assertResponseStatus(200, r);
         Assert.assertEquals("{\"edges\":[]}", content);
+        // the same filter as JSON number literals: parsed exactly, not as a
+        // double, so the exact value hits and the one-digit change misses
+        r = client().get(edges, ImmutableMap.of(
+                "vertex_id", id2Json(payer), "direction", "OUT", "label", "pay",
+                "properties", URLEncoder.encode("{\"amount\":" + literal + "}",
+                                                StandardCharsets.UTF_8)));
+        content = assertResponseStatus(200, r);
+        Assert.assertContains("\"amount\":\"" + literal + "\"", content);
+        r = client().get(edges, ImmutableMap.of(
+                "vertex_id", id2Json(payer), "direction", "OUT", "label", "pay",
+                "properties", URLEncoder.encode("{\"amount\":" + near + "}",
+                                                StandardCharsets.UTF_8)));
+        content = assertResponseStatus(200, r);
+        Assert.assertEquals("{\"edges\":[]}", content);
+
+        // a DECIMAL default value given as a JSON number keeps every digit,
+        // on create and after the schema is read back from the backend
+        String fee = "0.1234567890123456789";
+        createAndAssert(URL_PREFIX + "/schema/propertykeys",
+                        "{" +
+                        "\"name\": \"fee\"," +
+                        "\"data_type\": \"DECIMAL\"," +
+                        "\"cardinality\": \"SINGLE\"," +
+                        "\"check_exist\": false," +
+                        "\"user_data\": {\"~default_value\": " + fee + "}," +
+                        "\"properties\":[]" +
+                        "}", 202);
+        r = client().get(URL_PREFIX + "/schema/propertykeys/", "fee");
+        content = assertResponseStatus(200, r);
+        Assert.assertContains("\"~default_value\":\"" + fee + "\"", content);
+        createAndAssert(URL_PREFIX + "/schema/vertexlabels",
+                        "{" +
+                        "\"primary_keys\":[\"name\"]," +
+                        "\"id_strategy\": \"PRIMARY_KEY\"," +
+                        "\"name\": \"fees\"," +
+                        "\"properties\":[\"name\", \"fee\"]," +
+                        "\"check_exist\": false," +
+                        "\"nullable_keys\":[\"fee\"]" +
+                        "}");
+        r = client().post(PATH, "{\"label\":\"fees\",\"properties\":{\"name\":\"f1\"}}");
+        content = assertResponseStatus(201, r);
+        Assert.assertContains("\"fee\":\"" + fee + "\"", content);
 
         // a fraction elsewhere in a body keeps its usual type: a DOUBLE key
         // with a fractional default value round-trips as a JSON number

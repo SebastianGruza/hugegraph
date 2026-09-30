@@ -1237,8 +1237,8 @@ public class BinarySerializer extends AbstractSerializer {
             byte[] userdataBytes = column(HugeKeys.USER_DATA);
             String userdataStr = StringEncoding.decode(userdataBytes);
             @SuppressWarnings("unchecked")
-            Map<String, Object> userdata = JsonUtil.fromJson(userdataStr,
-                                                             Map.class);
+            Map<String, Object> userdata = JsonUtil.fromJsonExact(userdataStr,
+                                                                  Map.class);
             for (Map.Entry<String, Object> e : userdata.entrySet()) {
                 schema.userdata(e.getKey(), e.getValue());
             }

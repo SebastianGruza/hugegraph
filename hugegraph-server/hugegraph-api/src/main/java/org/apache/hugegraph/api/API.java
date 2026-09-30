@@ -30,6 +30,7 @@ import org.apache.hugegraph.core.GraphManager;
 import org.apache.hugegraph.define.Checkable;
 import org.apache.hugegraph.exception.NotFoundException;
 import org.apache.hugegraph.metrics.MetricsUtil;
+import org.apache.hugegraph.schema.PropertyKey;
 import org.apache.hugegraph.space.GraphSpace;
 import org.apache.hugegraph.space.SchemaTemplate;
 import org.apache.hugegraph.space.Service;
@@ -37,6 +38,7 @@ import org.apache.hugegraph.util.E;
 import org.apache.hugegraph.util.InsertionOrderUtil;
 import org.apache.hugegraph.util.JsonUtil;
 import org.apache.hugegraph.util.Log;
+import org.apache.tinkerpop.gremlin.process.traversal.P;
 import org.slf4j.Logger;
 
 import com.codahale.metrics.Meter;
@@ -222,6 +224,33 @@ public class API {
     }
 
     @SuppressWarnings("unchecked")
+    /**
+     * Convert each plain filter value to the runtime type of its property
+     * key (a JSON fraction arrives as BigDecimal, an integer literal as
+     * Integer or Long): a DECIMAL value keeps every digit, a DOUBLE value
+     * becomes a double as before. Predicates (P.gt(...)), collections and
+     * values of unknown keys are left as they are.
+     */
+    protected static void normalizeProperties(HugeGraph g, Map<String, Object> props) {
+        for (Map.Entry<String, Object> entry : props.entrySet()) {
+            Object value = entry.getValue();
+            if (value == null || value instanceof Collection || value instanceof Map ||
+                value instanceof P) {
+                continue;
+            }
+            PropertyKey pkey;
+            try {
+                pkey = g.propertyKey(entry.getKey());
+            } catch (NotFoundException e) {
+                continue;
+            }
+            Object typed = pkey.validValue(value);
+            if (typed != null) {
+                entry.setValue(typed);
+            }
+        }
+    }
+
     protected static Map<String, Object> parseProperties(String properties) {
         if (properties == null || properties.isEmpty()) {
             return ImmutableMap.of();
@@ -229,7 +258,8 @@ public class API {
 
         Map<String, Object> props = null;
         try {
-            props = JsonUtil.fromJson(properties, Map.class);
+            // Exact fractions: a DECIMAL filter keeps every digit
+            props = JsonUtil.fromJsonExact(properties, Map.class);
         } catch (Exception ignored) {
             // ignore
         }

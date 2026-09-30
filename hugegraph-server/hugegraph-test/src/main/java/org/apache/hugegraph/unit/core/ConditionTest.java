@@ -17,6 +17,7 @@
 
 package org.apache.hugegraph.unit.core;
 
+import java.math.BigDecimal;
 import java.util.Date;
 
 import org.apache.hugegraph.backend.id.IdGenerator;
@@ -393,6 +394,28 @@ public class ConditionTest extends BaseUnitTest {
             Assert.assertEquals("Can't test 'single-value'(String) for `in`, " +
                                 "expect Collection", e.getMessage());
         });
+    }
+
+    @Test
+    public void testConditionInMatchesNumbersByValue() {
+        // BigDecimal.equals() is scale sensitive; IN/NOT_IN compare by value
+        // like EQ, so a stored 1.0 is within (1.00, 2.5) on every backend
+        Condition c = new SyspropRelation(HugeKeys.ID, RelationType.IN,
+                                          ImmutableList.of(new BigDecimal("1.00"),
+                                                           new BigDecimal("2.5")));
+        Assert.assertTrue(c.test(new BigDecimal("1.0")));
+        Assert.assertTrue(c.test(new BigDecimal("1")));
+        Assert.assertTrue(c.test(1));
+        Assert.assertTrue(c.test(2.5d));
+        Assert.assertFalse(c.test(new BigDecimal("1.01")));
+        Assert.assertFalse(c.test("1.0"));
+
+        Condition n = new SyspropRelation(HugeKeys.ID, RelationType.NOT_IN,
+                                          ImmutableList.of(new BigDecimal("1.00")));
+        Assert.assertFalse(n.test(new BigDecimal("1.0")));
+        Assert.assertFalse(n.test(1L));
+        Assert.assertTrue(n.test(new BigDecimal("1.1")));
+        Assert.assertTrue(n.test("1.0"));
     }
 
     @Test

@@ -116,7 +116,43 @@ public class PropertyKey extends SchemaElement implements Propertiable {
 
     public void defineDefaultValue(Object value) {
         // TODO add a field default_value
-        this.userdata().put(Userdata.DEFAULT_VALUE, value);
+        this.userdata().put(Userdata.DEFAULT_VALUE, this.normalizeDefaultValue(value));
+    }
+
+    /**
+     * The default value is kept in userdata in the runtime type of this
+     * key's data type (a JSON fraction arrives as BigDecimal: a DOUBLE key
+     * keeps a Double, a DECIMAL key the exact BigDecimal), both when the key
+     * is defined through the API and when it is read back from the backend,
+     * so the value serializes the same way on every path.
+     */
+    @Override
+    public void userdata(String key, Object value) {
+        if (Userdata.DEFAULT_VALUE.equals(key)) {
+            value = this.normalizeDefaultValue(value);
+        }
+        super.userdata(key, value);
+    }
+
+    @Override
+    public void userdata(Userdata userdata) {
+        E.checkArgumentNotNull(userdata, "userdata");
+        for (Map.Entry<String, Object> e : userdata.entrySet()) {
+            this.userdata(e.getKey(), e.getValue());
+        }
+    }
+
+    private Object normalizeDefaultValue(Object value) {
+        if (value == null || this.dataType == null) {
+            return value;
+        }
+        Object raw = value;
+        if (this.cardinality == Cardinality.SET && value instanceof Collection &&
+            !(value instanceof Set)) {
+            raw = new LinkedHashSet<>((Collection<?>) value);
+        }
+        Object valid = this.validValue(raw);
+        return valid != null ? valid : value;
     }
 
     public Object defaultValue() {

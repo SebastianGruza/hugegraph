@@ -286,6 +286,7 @@ public class VertexAPI extends BatchAPI {
             }
         }
 
+        normalizeProperties(g, props);
         for (Map.Entry<String, Object> entry : props.entrySet()) {
             traversal = traversal.has(entry.getKey(), entry.getValue());
         }

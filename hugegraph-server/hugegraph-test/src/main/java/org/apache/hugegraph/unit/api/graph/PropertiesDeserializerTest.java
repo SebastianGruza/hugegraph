@@ -22,6 +22,8 @@ import java.util.List;
 import java.util.Map;
 
 import org.apache.hugegraph.api.graph.PropertiesDeserializer;
+import org.apache.hugegraph.api.schema.UserdataDeserializer;
+import org.apache.hugegraph.schema.Userdata;
 import org.apache.hugegraph.testutil.Assert;
 import org.junit.Test;
 
@@ -78,13 +80,36 @@ public class PropertiesDeserializerTest {
         Assert.assertEquals(0.85d, body.options.get("alpha"));
     }
 
+    public static class KeyBody {
+
+        @JsonProperty("name")
+        public String name;
+        @JsonProperty("user_data")
+        @JsonDeserialize(using = UserdataDeserializer.class)
+        public Userdata userdata;
+    }
+
+    /** The same reading on a property key's user_data (PropertyKeyAPI). */
+    @Test
+    public void testPropertyKeyUserdataIsExact() throws Exception {
+        KeyBody key = MAPPER.readValue(
+                "{\"name\":\"fee\"," +
+                "\"user_data\":{\"~default_value\":0.1234567890123456789,\"note\":\"x\"," +
+                "\"weight\":2}}", KeyBody.class);
+        Assert.assertEquals(new BigDecimal("0.1234567890123456789"),
+                            key.userdata.get("~default_value"));
+        Assert.assertEquals("x", key.userdata.get("note"));
+        Assert.assertEquals(2, key.userdata.get("weight"));
+        key = MAPPER.readValue("{\"name\":\"fee\"}", KeyBody.class);
+        Assert.assertNull(key.userdata);
+    }
+
     @Test
     public void testNullAndNonObject() throws Exception {
         Body body = MAPPER.readValue("{\"label\":\"x\",\"properties\":null}",
                                      Body.class);
         Assert.assertNull(body.properties);
-        Assert.assertThrows(com.fasterxml.jackson.databind.JsonMappingException.class,
-                            () -> {
+        Assert.assertThrows(com.fasterxml.jackson.databind.JsonMappingException.class, () -> {
             MAPPER.readValue("{\"label\":\"x\",\"properties\":[1]}", Body.class);
         });
     }
