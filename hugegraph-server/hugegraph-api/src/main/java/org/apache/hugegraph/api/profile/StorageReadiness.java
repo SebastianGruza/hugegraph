@@ -21,6 +21,11 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
+import java.util.concurrent.atomic.AtomicReference;
 
 import org.apache.hugegraph.HugeGraph;
 import org.apache.hugegraph.auth.HugeGraphAuthProxy;
@@ -47,6 +52,8 @@ public final class StorageReadiness {
 
     private static volatile Map<String, Object> lastResult;
     private static volatile long lastCheckedAt;
+    private static final AtomicReference<CompletableFuture<Map<String, Object>>> IN_FLIGHT =
+            new AtomicReference<>();
 
     private StorageReadiness() {
     }
@@ -79,8 +86,15 @@ public final class StorageReadiness {
         return holder.get(0);
     }
 
-    public static synchronized Map<String, Object> check(Probe probe, long timeoutMs,
-                                                         long cacheTtlMs) {
+    /**
+     * At most one probe runs at a time and every caller gets its answer:
+     * the first caller runs the probe on its own thread, concurrent callers
+     * wait for that result, each bounded by its own timeout. No monitor is
+     * held during the probe, so a slow store cannot queue REST workers
+     * behind it (relevant with readiness.cache_ttl=0, where every request
+     * probes).
+     */
+    public static Map<String, Object> check(Probe probe, long timeoutMs, long cacheTtlMs) {
         long now = System.currentTimeMillis();
         Map<String, Object> cached = lastResult;
         if (cached != null && now - lastCheckedAt < cacheTtlMs) {
@@ -88,6 +102,43 @@ public final class StorageReadiness {
             body.put("cached", true);
             return body;
         }
+        CompletableFuture<Map<String, Object>> mine = new CompletableFuture<>();
+        CompletableFuture<Map<String, Object>> running = IN_FLIGHT.get();
+        if (running == null && IN_FLIGHT.compareAndSet(null, mine)) {
+            Map<String, Object> body;
+            try {
+                body = probeOnce(probe, timeoutMs);
+                lastResult = body;
+                lastCheckedAt = System.currentTimeMillis();
+            } finally {
+                IN_FLIGHT.set(null);
+            }
+            mine.complete(body);
+            return new LinkedHashMap<>(body);
+        }
+        if (running == null) {
+            running = IN_FLIGHT.get();
+        }
+        if (running == null) {
+            // The owner finished between our two reads: its result is cached
+            return check(probe, timeoutMs, cacheTtlMs);
+        }
+        try {
+            Map<String, Object> body = new LinkedHashMap<>(
+                    running.get(timeoutMs, TimeUnit.MILLISECONDS));
+            body.put("shared", true);
+            return body;
+        } catch (TimeoutException e) {
+            return notReady("a probe is still running after " + timeoutMs + " ms");
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            return notReady("interrupted");
+        } catch (ExecutionException e) {
+            return notReady("probe failed: " + e.getCause().getClass().getSimpleName());
+        }
+    }
+
+    private static Map<String, Object> probeOnce(Probe probe, long timeoutMs) {
         Map<String, Object> body = new LinkedHashMap<>();
         body.put("ready", false);
         body.put("storage", BACKEND_HSTORE);
@@ -100,18 +151,26 @@ public final class StorageReadiness {
             body.put("reason", "probe failed: " + e.getClass().getSimpleName());
         }
         body.put("cached", false);
-        lastResult = body;
-        lastCheckedAt = System.currentTimeMillis();
-        return new LinkedHashMap<>(body);
+        return body;
+    }
+
+    private static Map<String, Object> notReady(String reason) {
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("ready", false);
+        body.put("storage", BACKEND_HSTORE);
+        body.put("reason", reason);
+        body.put("cached", false);
+        return body;
     }
 
     public static boolean isReady(Map<String, Object> body) {
         return Boolean.TRUE.equals(body.get("ready"));
     }
 
-    public static synchronized void resetCache() {
+    public static void resetCache() {
         lastResult = null;
         lastCheckedAt = 0L;
+        IN_FLIGHT.set(null);
     }
 
     private static HugeGraph firstHstoreGraph(GraphManager manager) {
