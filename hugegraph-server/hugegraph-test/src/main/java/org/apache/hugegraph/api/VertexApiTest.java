@@ -18,6 +18,8 @@
 package org.apache.hugegraph.api;
 
 import java.io.IOException;
+import java.net.URLEncoder;
+import java.nio.charset.StandardCharsets;
 
 import org.apache.hugegraph.testutil.Assert;
 import org.junit.Before;
@@ -162,6 +164,64 @@ public class VertexApiTest extends BaseApiTest {
         content = assertResponseStatus(201, r);
         Assert.assertContains("\"amount\":\"0.000000000000000001\"", content);
         Assert.assertContains("\"weight\":2.5", content);
+
+        // Filtering by the decimal value is exact on every backend. A vertex
+        // filter without an index is refused, so the case that reaches the
+        // store is an edge query by vertex + label + property: on HStore
+        // the condition is pushed down and must arrive as a BigDecimal
+        createAndAssert(URL_PREFIX + "/schema/edgelabels",
+                        "{" +
+                        "\"name\": \"pay\"," +
+                        "\"source_label\": \"person\"," +
+                        "\"target_label\": \"person\"," +
+                        "\"frequency\": \"SINGLE\"," +
+                        "\"properties\":[\"amount\"]," +
+                        "\"nullable_keys\":[\"amount\"]," +
+                        "\"check_exist\": false" +
+                        "}");
+        String payer = parseId(assertResponseStatus(201, client().post(PATH,
+                "{\"label\":\"person\",\"properties\":{\"name\":\"payer\"," +
+                "\"age\":30,\"city\":\"Beijing\"}}")));
+        String payee = parseId(assertResponseStatus(201, client().post(PATH,
+                "{\"label\":\"person\",\"properties\":{\"name\":\"payee\"," +
+                "\"age\":31,\"city\":\"Beijing\"}}")));
+        String edge = "{\"label\":\"pay\",\"outVLabel\":\"person\"," +
+                      "\"inVLabel\":\"person\",\"outV\":\"" + payer + "\"," +
+                      "\"inV\":\"" + payee + "\"," +
+                      "\"properties\":{\"amount\":" + literal + "}}";
+        content = assertResponseStatus(201, client().post(
+                URL_PREFIX + "/graph/edges/", edge));
+        Assert.assertContains("\"amount\":\"" + literal + "\"", content);
+
+        String edges = URL_PREFIX + "/graph/edges/";
+        r = client().get(edges, ImmutableMap.of(
+                "vertex_id", id2Json(payer), "direction", "OUT", "label", "pay",
+                "properties", URLEncoder.encode("{\"amount\":\"" + literal + "\"}",
+                                                StandardCharsets.UTF_8)));
+        content = assertResponseStatus(200, r);
+        Assert.assertContains("\"amount\":\"" + literal + "\"", content);
+        String near = literal.substring(0, literal.length() - 1) + "9";
+        r = client().get(edges, ImmutableMap.of(
+                "vertex_id", id2Json(payer), "direction", "OUT", "label", "pay",
+                "properties", URLEncoder.encode("{\"amount\":\"" + near + "\"}",
+                                                StandardCharsets.UTF_8)));
+        content = assertResponseStatus(200, r);
+        Assert.assertEquals("{\"edges\":[]}", content);
+
+        // a fraction elsewhere in a body keeps its usual type: a DOUBLE key
+        // with a fractional default value round-trips as a JSON number
+        createAndAssert(URL_PREFIX + "/schema/propertykeys",
+                        "{" +
+                        "\"name\": \"ratio\"," +
+                        "\"data_type\": \"DOUBLE\"," +
+                        "\"cardinality\": \"SINGLE\"," +
+                        "\"check_exist\": false," +
+                        "\"user_data\": {\"~default_value\": 1.5}," +
+                        "\"properties\":[]" +
+                        "}", 202);
+        r = client().get(URL_PREFIX + "/schema/propertykeys/", "ratio");
+        content = assertResponseStatus(200, r);
+        Assert.assertContains("\"~default_value\":1.5", content);
 
         // integer keys still reject a fraction, with the usual message
         vertex = "{" +

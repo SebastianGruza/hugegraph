@@ -73,8 +73,6 @@ public class ApplicationConfig extends ResourceConfig {
 
         // Register Jackson to support json
         register(org.glassfish.jersey.jackson.JacksonFeature.class);
-        // Read JSON fraction literals as BigDecimal (exact DECIMAL values)
-        register(ObjectMapperResolver.class);
 
         // Register to use the jsr250 annotations @RolesAllowed
         register(RolesAllowedDynamicFeature.class);

@@ -31,6 +31,7 @@ import org.apache.hugegraph.traversal.optimize.TraversalUtilOptimizeTest;
 import org.apache.hugegraph.unit.api.auth.LoginAPITest;
 import org.apache.hugegraph.unit.api.filter.AccessLogFilterTest;
 import org.apache.hugegraph.unit.api.filter.LoadDetectFilterTest;
+import org.apache.hugegraph.unit.api.graph.PropertiesDeserializerTest;
 import org.apache.hugegraph.unit.api.filter.PathFilterTest;
 import org.apache.hugegraph.unit.api.gremlin.GremlinQueryAPITest;
 import org.apache.hugegraph.unit.api.space.GraphSpaceAPITest;
@@ -108,6 +109,7 @@ import org.junit.runners.Suite;
         /* api filter */
         AccessLogFilterTest.class,
         LoadDetectFilterTest.class,
+        PropertiesDeserializerTest.class,
         LoginAPITest.class,
         PathFilterTest.class,
 

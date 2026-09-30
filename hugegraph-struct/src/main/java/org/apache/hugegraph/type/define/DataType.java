@@ -197,9 +197,11 @@ public enum DataType implements SerialEnum {
     }
 
     public static BigDecimal checkDecimalBounds(BigDecimal decimal) {
-        int scale = Math.abs(decimal.scale());
+        int scale = decimal.scale();
         int precision = decimal.precision();
-        if (precision > DECIMAL_MAX_PRECISION || scale > DECIMAL_MAX_SCALE) {
+        // Compare the scale directly: Math.abs(Integer.MIN_VALUE) overflows
+        if (precision > DECIMAL_MAX_PRECISION ||
+            scale < -DECIMAL_MAX_SCALE || scale > DECIMAL_MAX_SCALE) {
             throw new IllegalArgumentException(String.format(
                     "Decimal value out of bounds: precision %d, scale %d " +
                     "(at most %d significant digits and a scale of at most " +

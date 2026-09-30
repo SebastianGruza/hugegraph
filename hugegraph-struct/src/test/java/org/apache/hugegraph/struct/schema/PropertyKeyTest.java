@@ -138,6 +138,12 @@ public class PropertyKeyTest {
                 propertyKey.validValueOrThrow(bad);
             });
         }
+        for (int scale : new int[]{Integer.MIN_VALUE, Integer.MAX_VALUE}) {
+            Assert.assertThrows(IllegalArgumentException.class, () -> {
+                propertyKey.validValueOrThrow(
+                        new BigDecimal(java.math.BigInteger.ONE, scale));
+            });
+        }
         Assert.assertThrows(IllegalArgumentException.class, () -> {
             propertyKey.validValueOrThrow(new BigDecimal("1E+999999999"));
         });

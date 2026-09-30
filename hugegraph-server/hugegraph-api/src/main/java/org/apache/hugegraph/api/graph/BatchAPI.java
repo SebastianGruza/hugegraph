@@ -40,6 +40,7 @@ import org.slf4j.Logger;
 import com.codahale.metrics.Meter;
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.fasterxml.jackson.annotation.JsonProperty;
+import com.fasterxml.jackson.databind.annotation.JsonDeserialize;
 
 import io.swagger.v3.oas.annotations.media.Schema;
 
@@ -93,6 +94,7 @@ public class BatchAPI extends API {
         public String label;
         @Schema(description = "The properties of the vertex/edge in key-value format")
         @JsonProperty("properties")
+        @JsonDeserialize(using = PropertiesDeserializer.class)
         public Map<String, Object> properties;
         @Schema(description = "The type of element (vertex or edge)", hidden = true)
         @JsonProperty("type")

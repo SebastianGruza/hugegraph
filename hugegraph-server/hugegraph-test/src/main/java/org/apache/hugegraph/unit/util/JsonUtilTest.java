@@ -18,6 +18,7 @@
 package org.apache.hugegraph.unit.util;
 
 import java.math.BigDecimal;
+import java.util.Map;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.Date;
@@ -332,6 +333,21 @@ public class JsonUtilTest extends BaseUnitTest {
                             JsonUtil.toJson(new BigDecimal("-1.50")));
         Assert.assertEquals("{\"balance\":\"1000000000000000000000\"}",
                             JsonUtil.toJson(ImmutableMap.of("balance", decimal)));
+        // beyond the DECIMAL scale bound (a generic Gremlin result, not a
+        // property) the scientific form: exact, and no exponent expansion
+        Assert.assertEquals("\"1E+999999999\"",
+                            JsonUtil.toJson(new BigDecimal("1E+999999999")));
+        Assert.assertEquals("\"1E-129\"",
+                            JsonUtil.toJson(new BigDecimal("1E-129")));
+        String zeros128 = new String(new char[128]).replace("\0", "0");
+        Assert.assertEquals("\"1" + zeros128 + "\"",
+                            JsonUtil.toJson(new BigDecimal("1E+128")));
+        // a double stays a JSON number: job parameters and schema userdata
+        // are not touched by the decimal handling
+        Assert.assertEquals("{\"alpha\":0.85}",
+                            JsonUtil.toJson(ImmutableMap.of("alpha", 0.85d)));
+        Assert.assertEquals(0.85d, JsonUtil.fromJson("{\"alpha\":0.85}",
+                                                     Map.class).get("alpha"));
 
         // both a string and a number literal are accepted on the way in
         Assert.assertEquals(new BigDecimal("1.5"),

@@ -52,6 +52,7 @@ import org.apache.hugegraph.structure.HugeEdge;
 import org.apache.hugegraph.structure.HugeElement;
 import org.apache.hugegraph.structure.HugeProperty;
 import org.apache.hugegraph.structure.HugeVertex;
+import org.apache.hugegraph.type.define.DataType;
 import org.apache.hugegraph.type.define.HugeKeys;
 import org.apache.hugegraph.util.Blob;
 import org.apache.hugegraph.util.Log;
@@ -971,7 +972,23 @@ public class HugeGraphSONModule extends TinkerPopJacksonModule {
         @Override
         public void serialize(BigDecimal decimal, JsonGenerator jsonGenerator,
                               SerializerProvider provider) throws IOException {
-            jsonGenerator.writeString(decimal.toPlainString());
+            jsonGenerator.writeString(exactString(decimal));
+        }
+
+        /**
+         * The plain form ("1000", "0.000000000000000001") while the scale
+         * is within the DECIMAL bound, so a stored value always reads as
+         * digits; beyond it the scientific form ("1E+999999999"), which is
+         * just as exact but does not expand the exponent into characters.
+         * A generic Gremlin result is not bound by the property check.
+         */
+        static String exactString(BigDecimal decimal) {
+            int scale = decimal.scale();
+            if (scale >= -DataType.DECIMAL_MAX_SCALE &&
+                scale <= DataType.DECIMAL_MAX_SCALE) {
+                return decimal.toPlainString();
+            }
+            return decimal.toString();
         }
 
         @Override

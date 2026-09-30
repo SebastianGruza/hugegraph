@@ -104,6 +104,16 @@ public class DataTypeTest {
     public void testValueToDecimalBounds() {
         // a huge exponent is a few bytes on disk and a billion characters
         // from toPlainString() on every read: rejected before it is stored
+        // the extreme scales, where Math.abs(Integer.MIN_VALUE) would overflow
+        for (int scale : new int[]{Integer.MIN_VALUE, Integer.MIN_VALUE + 1,
+                                   Integer.MAX_VALUE}) {
+            Assert.assertThrows(IllegalArgumentException.class, () -> {
+                DataType.DECIMAL.valueToDecimal(
+                        new BigDecimal(BigInteger.ONE, scale));
+            }, e -> {
+                Assert.assertContains("out of bounds", e.getMessage());
+            });
+        }
         for (String bad : new String[]{"1E+999999999", "1E-999999999",
                                        "1E+129", "1E-129"}) {
             Assert.assertThrows(IllegalArgumentException.class, () -> {

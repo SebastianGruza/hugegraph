@@ -156,16 +156,6 @@ public enum DataType implements SerialEnum {
         return number;
     }
 
-    /**
-     * Convert a value to BigDecimal: BigDecimal as is, any other Number and a
-     * decimal string through their exact decimal representation. Float and
-     * Double go through Number.toString(), i.e. the shortest string that
-     * round-trips the binary value, so a client that already holds a lossy
-     * double gets that double, exactly.
-     *
-     * @return the BigDecimal, or null if the value is not a Number or String
-     * @throws IllegalArgumentException if the string is not a decimal number
-     */
     /*
      * Bounds for a DECIMAL value: at most DECIMAL_MAX_PRECISION significant
      * digits and an absolute scale of at most DECIMAL_MAX_SCALE. uint256
@@ -176,6 +166,16 @@ public enum DataType implements SerialEnum {
     public static final int DECIMAL_MAX_PRECISION = 128;
     public static final int DECIMAL_MAX_SCALE = 128;
 
+    /**
+     * Convert a value to BigDecimal: BigDecimal as is, any other Number and a
+     * decimal string through their exact decimal representation. Float and
+     * Double go through Number.toString(), i.e. the shortest string that
+     * round-trips the binary value, so a client that already holds a lossy
+     * double gets that double, exactly.
+     *
+     * @return the BigDecimal, or null if the value is not a Number or String
+     * @throws IllegalArgumentException if the string is not a decimal number
+     */
     public <V> BigDecimal valueToDecimal(V value) {
         if (!this.isDecimal()) {
             return null;
@@ -203,9 +203,11 @@ public enum DataType implements SerialEnum {
     }
 
     public static BigDecimal checkDecimalBounds(BigDecimal decimal) {
-        int scale = Math.abs(decimal.scale());
+        int scale = decimal.scale();
         int precision = decimal.precision();
-        if (precision > DECIMAL_MAX_PRECISION || scale > DECIMAL_MAX_SCALE) {
+        // Compare the scale directly: Math.abs(Integer.MIN_VALUE) overflows
+        if (precision > DECIMAL_MAX_PRECISION ||
+            scale < -DECIMAL_MAX_SCALE || scale > DECIMAL_MAX_SCALE) {
             throw new IllegalArgumentException(String.format(
                     "Decimal value out of bounds: precision %d, scale %d " +
                     "(at most %d significant digits and a scale of at most " +
