@@ -69,6 +69,7 @@ import org.apache.hugegraph.unit.core.SerialEnumTest;
 import org.apache.hugegraph.unit.core.ServerInfoManagerTest;
 import org.apache.hugegraph.unit.core.SystemSchemaStoreTest;
 import org.apache.hugegraph.unit.core.TaskSchedulerServerInfoTest;
+import org.apache.hugegraph.unit.core.PropertyKeyUserdataTest;
 import org.apache.hugegraph.unit.core.TraversalUtilTest;
 import org.apache.hugegraph.unit.id.EdgeIdTest;
 import org.apache.hugegraph.unit.id.IdTest;
@@ -168,6 +169,7 @@ import org.junit.runners.Suite;
         HstoreSessionsTest.class,
         BackendStoreInfoTest.class,
         TraversalUtilTest.class,
+        PropertyKeyUserdataTest.class,
         TraversalUtilOptimizeTest.class,
         IdHolderTest.class,
         PageStateTest.class,

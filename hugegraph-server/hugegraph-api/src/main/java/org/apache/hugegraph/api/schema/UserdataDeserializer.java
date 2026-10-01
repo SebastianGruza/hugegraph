@@ -18,26 +18,28 @@
 package org.apache.hugegraph.api.schema;
 
 import java.io.IOException;
+import java.util.LinkedHashMap;
 import java.util.Map;
 
 import org.apache.hugegraph.api.graph.PropertiesDeserializer;
 import org.apache.hugegraph.schema.Userdata;
 
 import com.fasterxml.jackson.core.JsonParser;
+import com.fasterxml.jackson.core.JsonToken;
 import com.fasterxml.jackson.databind.DeserializationContext;
+import com.fasterxml.jackson.databind.JsonMappingException;
 import com.fasterxml.jackson.databind.deser.std.StdDeserializer;
 
 /**
- * The userdata of a property key read like element properties: a JSON
- * fraction becomes a BigDecimal with every digit, so a DECIMAL
- * {@code ~default_value} reaches the property key exactly; everything else
- * keeps Jackson's default types.
+ * The userdata of a property key: {@code ~default_value} is read like an
+ * element property (a JSON fraction becomes a BigDecimal with every digit,
+ * so a DECIMAL default reaches the key exactly), every other entry keeps
+ * Jackson's default types, so custom metadata such as {@code {"rate":0.85}}
+ * stays a double and round-trips as a JSON number.
  */
 public class UserdataDeserializer extends StdDeserializer<Userdata> {
 
     private static final long serialVersionUID = 1L;
-
-    private static final PropertiesDeserializer PROPERTIES = new PropertiesDeserializer();
 
     public UserdataDeserializer() {
         super(Userdata.class);
@@ -46,7 +48,24 @@ public class UserdataDeserializer extends StdDeserializer<Userdata> {
     @Override
     public Userdata deserialize(JsonParser parser, DeserializationContext context)
                                 throws IOException {
-        Map<String, Object> map = PROPERTIES.deserialize(parser, context);
-        return map == null ? null : new Userdata(map);
+        JsonToken token = parser.currentToken();
+        if (token == JsonToken.VALUE_NULL) {
+            return null;
+        }
+        if (token != JsonToken.START_OBJECT) {
+            throw JsonMappingException.from(parser,
+                  "Expected an object for 'user_data', but got " + token);
+        }
+        Map<String, Object> map = new LinkedHashMap<>();
+        while (parser.nextToken() != JsonToken.END_OBJECT) {
+            String name = parser.currentName();
+            parser.nextToken();
+            if (Userdata.DEFAULT_VALUE.equals(name)) {
+                map.put(name, PropertiesDeserializer.readValue(parser));
+            } else {
+                map.put(name, context.readValue(parser, Object.class));
+            }
+        }
+        return new Userdata(map);
     }
 }

@@ -17,6 +17,7 @@
 
 package org.apache.hugegraph.schema;
 
+import java.math.BigDecimal;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
@@ -120,12 +121,30 @@ public class PropertyKey extends SchemaElement implements Propertiable {
     }
 
     /**
-     * The default value is kept in userdata in the runtime type of this
-     * key's data type (a JSON fraction arrives as BigDecimal: a DOUBLE key
-     * keeps a Double, a DECIMAL key the exact BigDecimal), both when the key
-     * is defined through the API and when it is read back from the backend,
-     * so the value serializes the same way on every path.
+     * A DECIMAL key keeps its default value in userdata as the exact
+     * BigDecimal (a JSON fraction arrives as BigDecimal, a string is parsed),
+     * both when the key is defined through the API and when it is read back
+     * from the backend, so the value serializes the same way on every path.
+     * Every other data type keeps the raw value the user sent, as before:
+     * {@link #defaultValue()} converts it lazily when it is applied; only a
+     * BigDecimal (which exists solely because the API reads the default
+     * exactly) becomes the Double the default parser produced on master.
      */
+    /** A BigDecimal from the exact parser as the Double the default parser gave. */
+    private static Object undoExact(Object value) {
+        if (value instanceof BigDecimal) {
+            return ((BigDecimal) value).doubleValue();
+        }
+        if (value instanceof Collection) {
+            List<Object> values = new ArrayList<>(((Collection<?>) value).size());
+            for (Object member : (Collection<?>) value) {
+                values.add(undoExact(member));
+            }
+            return value instanceof Set ? new LinkedHashSet<>(values) : values;
+        }
+        return value;
+    }
+
     @Override
     public void userdata(String key, Object value) {
         if (Userdata.DEFAULT_VALUE.equals(key)) {
@@ -143,16 +162,25 @@ public class PropertyKey extends SchemaElement implements Propertiable {
     }
 
     private Object normalizeDefaultValue(Object value) {
-        if (value == null || this.dataType == null) {
+        if (value == null) {
             return value;
+        }
+        if (this.dataType != DataType.DECIMAL) {
+            return undoExact(value);
         }
         Object raw = value;
         if (this.cardinality == Cardinality.SET && value instanceof Collection &&
             !(value instanceof Set)) {
             raw = new LinkedHashSet<>((Collection<?>) value);
         }
-        Object valid = this.validValue(raw);
-        return valid != null ? valid : value;
+        try {
+            Object valid = this.validValue(raw);
+            return valid != null ? valid : value;
+        } catch (RuntimeException e) {
+            // An already stored default that does not convert keeps loading;
+            // the error surfaces when the default is applied, as before
+            return value;
+        }
     }
 
     public Object defaultValue() {

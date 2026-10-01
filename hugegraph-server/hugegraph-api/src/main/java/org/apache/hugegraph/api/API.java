@@ -34,6 +34,7 @@ import org.apache.hugegraph.schema.PropertyKey;
 import org.apache.hugegraph.space.GraphSpace;
 import org.apache.hugegraph.space.SchemaTemplate;
 import org.apache.hugegraph.space.Service;
+import org.apache.hugegraph.traversal.optimize.TraversalUtil;
 import org.apache.hugegraph.util.E;
 import org.apache.hugegraph.util.InsertionOrderUtil;
 import org.apache.hugegraph.util.JsonUtil;
@@ -225,17 +226,19 @@ public class API {
 
     @SuppressWarnings("unchecked")
     /**
-     * Convert each plain filter value to the runtime type of its property
-     * key (a JSON fraction arrives as BigDecimal, an integer literal as
-     * Integer or Long): a DECIMAL value keeps every digit, a DOUBLE value
-     * becomes a double as before. Predicates (P.gt(...)), collections and
-     * values of unknown keys are left as they are.
+     * Convert each filter value to the runtime type of its property key the
+     * way the traversal does (TraversalUtil.validPropertyValue, which knows
+     * the key's cardinality: a list on a single key converts every member,
+     * a scalar on a LIST/SET key stays a scalar for membership). A JSON
+     * fraction arrives as BigDecimal, so a DECIMAL value keeps every digit
+     * and a DOUBLE value becomes a double as before. Predicates (P.gt(...))
+     * are converted when the traversal builds its conditions; values of
+     * unknown keys are left as they are.
      */
     protected static void normalizeProperties(HugeGraph g, Map<String, Object> props) {
         for (Map.Entry<String, Object> entry : props.entrySet()) {
             Object value = entry.getValue();
-            if (value == null || value instanceof Collection || value instanceof Map ||
-                value instanceof P) {
+            if (value == null || value instanceof P) {
                 continue;
             }
             PropertyKey pkey;
@@ -244,10 +247,7 @@ public class API {
             } catch (NotFoundException e) {
                 continue;
             }
-            Object typed = pkey.validValue(value);
-            if (typed != null) {
-                entry.setValue(typed);
-            }
+            entry.setValue(TraversalUtil.validPropertyValue(value, pkey));
         }
     }
 

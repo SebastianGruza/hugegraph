@@ -74,7 +74,8 @@ public class PropertiesDeserializer extends JsonDeserializer<Map<String, Object>
         return array;
     }
 
-    private static Object readValue(JsonParser parser) throws IOException {
+    /** One value at the parser's current token: exact fractions, nested objects and arrays. */
+    public static Object readValue(JsonParser parser) throws IOException {
         JsonToken token = parser.currentToken();
         switch (token) {
             case START_OBJECT:

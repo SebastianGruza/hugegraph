@@ -222,6 +222,65 @@ public class VertexApiTest extends BaseApiTest {
         content = assertResponseStatus(200, r);
         Assert.assertEquals("{\"edges\":[]}", content);
 
+        // a predicate with a fractional operand is exact as well
+        r = client().get(edges, ImmutableMap.of(
+                "vertex_id", id2Json(payer), "direction", "OUT", "label", "pay",
+                "properties", URLEncoder.encode("{\"amount\":\"P.eq(" + literal + ")\"}",
+                                                StandardCharsets.UTF_8)));
+        content = assertResponseStatus(200, r);
+        Assert.assertContains("\"amount\":\"" + literal + "\"", content);
+        r = client().get(edges, ImmutableMap.of(
+                "vertex_id", id2Json(payer), "direction", "OUT", "label", "pay",
+                "properties", URLEncoder.encode("{\"amount\":\"P.eq(" + near + ")\"}",
+                                                StandardCharsets.UTF_8)));
+        content = assertResponseStatus(200, r);
+        Assert.assertEquals("{\"edges\":[]}", content);
+        r = client().get(edges, ImmutableMap.of(
+                "vertex_id", id2Json(payer), "direction", "OUT", "label", "pay",
+                "properties", URLEncoder.encode("{\"amount\":\"P.within(" + near + "," +
+                                                literal + ")\"}", StandardCharsets.UTF_8)));
+        content = assertResponseStatus(200, r);
+        Assert.assertContains("\"amount\":\"" + literal + "\"", content);
+
+        // a LIST key: a list filter converts every member, a scalar filter
+        // keeps membership semantics
+        createAndAssert(URL_PREFIX + "/schema/propertykeys",
+                        "{" +
+                        "\"name\": \"amounts\"," +
+                        "\"data_type\": \"DECIMAL\"," +
+                        "\"cardinality\": \"LIST\"," +
+                        "\"check_exist\": false," +
+                        "\"properties\":[]" +
+                        "}", 202);
+        createAndAssert(URL_PREFIX + "/schema/edgelabels",
+                        "{" +
+                        "\"name\": \"pays\"," +
+                        "\"source_label\": \"person\"," +
+                        "\"target_label\": \"person\"," +
+                        "\"frequency\": \"SINGLE\"," +
+                        "\"properties\":[\"amounts\"]," +
+                        "\"nullable_keys\":[\"amounts\"]," +
+                        "\"check_exist\": false" +
+                        "}");
+        content = assertResponseStatus(201, client().post(URL_PREFIX + "/graph/edges/",
+                "{\"label\":\"pays\",\"outVLabel\":\"person\"," +
+                "\"inVLabel\":\"person\",\"outV\":\"" + payer + "\"," +
+                "\"inV\":\"" + payee + "\"," +
+                "\"properties\":{\"amounts\":[" + literal + ", 1.0]}}"));
+        Assert.assertContains("\"amounts\":[\"" + literal + "\",\"1.0\"]", content);
+        r = client().get(edges, ImmutableMap.of(
+                "vertex_id", id2Json(payer), "direction", "OUT", "label", "pays",
+                "properties", URLEncoder.encode("{\"amounts\":[" + literal + ",1.0]}",
+                                                StandardCharsets.UTF_8)));
+        content = assertResponseStatus(200, r);
+        Assert.assertContains("\"amounts\":[\"" + literal + "\",\"1.0\"]", content);
+        r = client().get(edges, ImmutableMap.of(
+                "vertex_id", id2Json(payer), "direction", "OUT", "label", "pays",
+                "properties", URLEncoder.encode("{\"amounts\":" + near + "}",
+                                                StandardCharsets.UTF_8)));
+        content = assertResponseStatus(200, r);
+        Assert.assertEquals("{\"edges\":[]}", content);
+
         // a DECIMAL default value given as a JSON number keeps every digit,
         // on create and after the schema is read back from the backend
         String fee = "0.1234567890123456789";
@@ -258,12 +317,28 @@ public class VertexApiTest extends BaseApiTest {
                         "\"data_type\": \"DOUBLE\"," +
                         "\"cardinality\": \"SINGLE\"," +
                         "\"check_exist\": false," +
-                        "\"user_data\": {\"~default_value\": 1.5}," +
+                        "\"user_data\": {\"~default_value\": 1.5, \"rate\": 0.85}," +
                         "\"properties\":[]" +
                         "}", 202);
         r = client().get(URL_PREFIX + "/schema/propertykeys/", "ratio");
         content = assertResponseStatus(200, r);
         Assert.assertContains("\"~default_value\":1.5", content);
+        // custom metadata keeps its type: a JSON number, not a string
+        Assert.assertContains("\"rate\":0.85", content);
+        // a default of another type keeps the form the user sent (a DATE
+        // default is converted only when it is applied, as on master)
+        createAndAssert(URL_PREFIX + "/schema/propertykeys",
+                        "{" +
+                        "\"name\": \"day\"," +
+                        "\"data_type\": \"DATE\"," +
+                        "\"cardinality\": \"SINGLE\"," +
+                        "\"check_exist\": false," +
+                        "\"user_data\": {\"~default_value\": \"2020-01-01\"}," +
+                        "\"properties\":[]" +
+                        "}", 202);
+        r = client().get(URL_PREFIX + "/schema/propertykeys/", "day");
+        content = assertResponseStatus(200, r);
+        Assert.assertContains("\"~default_value\":\"2020-01-01\"", content);
 
         // integer keys still reject a fraction, with the usual message
         vertex = "{" +

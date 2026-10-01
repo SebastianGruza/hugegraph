@@ -95,11 +95,18 @@ public class PropertiesDeserializerTest {
         KeyBody key = MAPPER.readValue(
                 "{\"name\":\"fee\"," +
                 "\"user_data\":{\"~default_value\":0.1234567890123456789,\"note\":\"x\"," +
-                "\"weight\":2}}", KeyBody.class);
+                "\"weight\":2,\"rate\":0.85,\"tags\":[1.5]}}", KeyBody.class);
         Assert.assertEquals(new BigDecimal("0.1234567890123456789"),
                             key.userdata.get("~default_value"));
         Assert.assertEquals("x", key.userdata.get("note"));
         Assert.assertEquals(2, key.userdata.get("weight"));
+        // only the default value is exact: other metadata keeps its types
+        Assert.assertEquals(0.85d, key.userdata.get("rate"));
+        Assert.assertEquals(1.5d, ((List<?>) key.userdata.get("tags")).get(0));
+        key = MAPPER.readValue("{\"name\":\"fee\",\"user_data\":{\"~default_value\":[1.5, 2]}}",
+                               KeyBody.class);
+        Assert.assertEquals(new BigDecimal("1.5"),
+                            ((List<?>) key.userdata.get("~default_value")).get(0));
         key = MAPPER.readValue("{\"name\":\"fee\"}", KeyBody.class);
         Assert.assertNull(key.userdata);
     }
