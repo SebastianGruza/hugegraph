@@ -37,9 +37,10 @@ import jakarta.ws.rs.core.Context;
 import jakarta.ws.rs.core.Response;
 
 /**
- * Storage-aware readiness for Kubernetes and load balancers: 200 while at
- * least one known Store answers this server, 503 while none does (or, before
- * any Store list is known, while PD does not answer). Unauthenticated, like
+ * Storage-aware readiness for Kubernetes and load balancers: on hstore 200
+ * while at least one known Store answers this server, 503 while none does
+ * (or, before any Store list is known, while PD does not answer); on hbase
+ * 200 while the cluster answers an admin call within the budget. Unauthenticated, like
  * /versions, so that an httpGet probe needs no credential; the body carries
  * no addresses and no raw exception text.
  */
@@ -55,7 +56,8 @@ public class ReadinessAPI extends API {
     public Response get(@Context GraphManager manager, @Context HugeConfig conf) {
         Map<String, Object> body = StorageReadiness.check(
                 manager, conf.get(ServerOptions.READINESS_TIMEOUT),
-                conf.get(ServerOptions.READINESS_CACHE_TTL));
+                conf.get(ServerOptions.READINESS_CACHE_TTL),
+                conf.get(ServerOptions.READINESS_MAX_WAITERS));
         Response.Status status = StorageReadiness.isReady(body) ?
                                  Response.Status.OK :
                                  Response.Status.SERVICE_UNAVAILABLE;
