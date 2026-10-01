@@ -21,10 +21,12 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
 import org.apache.hugegraph.HugeGraph;
@@ -33,12 +35,15 @@ import org.apache.hugegraph.core.GraphManager;
 import org.apache.hugegraph.util.Log;
 import org.slf4j.Logger;
 
+import com.google.common.collect.ImmutableSet;
+
 /**
  * Whether this server can serve graph traffic, for a readiness probe.
  * Graphs on an embedded backend are ready as soon as the REST layer answers.
- * Graphs on hstore are probed through the backend's "storage_readiness"
- * metadata: at least one known Store answers a cheap direct call; PD is only
- * needed until the first Store list is known. The storage is shared by every
+ * Graphs on a remote backend are probed through the backend's
+ * "storage_readiness" metadata: on hstore at least one known Store answers a
+ * cheap direct call (PD is only needed until the first Store list is known),
+ * on hbase the cluster answers an admin call about one of the graph's tables. The storage is shared by every
  * hstore graph of the process, so one graph is probed and the result is
  * reused for a short TTL to keep repeated probes cheap. The body never
  * carries raw exception text, since the endpoint is unauthenticated.
@@ -47,13 +52,29 @@ public final class StorageReadiness {
 
     public static final String STORAGE_READINESS_META = "storage_readiness";
     public static final String BACKEND_HSTORE = "hstore";
+    public static final String BACKEND_HBASE = "hbase";
+    /** Backends on a remote cluster, whose availability the probe checks. */
+    public static final Set<String> REMOTE_BACKENDS = ImmutableSet.of(BACKEND_HSTORE,
+                                                                       BACKEND_HBASE);
 
     private static final Logger LOG = Log.logger(StorageReadiness.class);
 
-    private static volatile Map<String, Object> lastResult;
-    private static volatile long lastCheckedAt;
+    /** A probe result with the time it was taken: the TTL check and the body come from one probe. */
+    private static final class Cached {
+
+        private final Map<String, Object> result;
+        private final long at;
+
+        private Cached(Map<String, Object> result, long at) {
+            this.result = result;
+            this.at = at;
+        }
+    }
+
+    private static final AtomicReference<Cached> LAST = new AtomicReference<>();
     private static final AtomicReference<CompletableFuture<Map<String, Object>>> IN_FLIGHT =
             new AtomicReference<>();
+    private static final AtomicInteger WAITERS = new AtomicInteger();
 
     private StorageReadiness() {
     }
@@ -64,14 +85,14 @@ public final class StorageReadiness {
         Map<String, Object> probe(long timeoutMs) throws Exception;
     }
 
-    public static Map<String, Object> check(GraphManager manager,
-                                            long timeoutMs, long cacheTtlMs) {
+    public static Map<String, Object> check(GraphManager manager, long timeoutMs,
+                                            long cacheTtlMs, int maxWaiters) {
         // The graphs are auth proxies and the probe request carries no user,
         // so look the graph up and probe it as the internal admin, the way
         // other internal paths do; the result carries no data or addresses
         List<Map<String, Object>> holder = new ArrayList<>(1);
         HugeGraphAuthProxy.runAsAdmin(() -> {
-            HugeGraph graph = firstHstoreGraph(manager);
+            HugeGraph graph = firstRemoteGraph(manager);
             if (graph == null) {
                 Map<String, Object> body = new LinkedHashMap<>();
                 body.put("ready", true);
@@ -80,25 +101,31 @@ public final class StorageReadiness {
                 holder.add(body);
                 return;
             }
-            holder.add(check(t -> graph.metadata(null, STORAGE_READINESS_META, t),
-                             timeoutMs, cacheTtlMs));
+            holder.add(check(graph.backend(),
+                             t -> graph.metadata(null, STORAGE_READINESS_META, t),
+                             timeoutMs, cacheTtlMs, maxWaiters));
         });
         return holder.get(0);
+    }
+
+    public static Map<String, Object> check(Probe probe, long timeoutMs, long cacheTtlMs) {
+        return check(BACKEND_HSTORE, probe, timeoutMs, cacheTtlMs, Integer.MAX_VALUE);
     }
 
     /**
      * At most one probe runs at a time and every caller gets its answer:
      * the first caller runs the probe on its own thread, concurrent callers
-     * wait for that result, each bounded by its own timeout. No monitor is
-     * held during the probe, so a slow store cannot queue REST workers
-     * behind it (relevant with readiness.cache_ttl=0, where every request
-     * probes).
+     * wait for that result, each bounded by its own timeout, and at most
+     * {@code maxWaiters} of them wait at once: the rest get an immediate
+     * not-ready, so a burst of probes during slow storage cannot hold the
+     * REST worker pool (the endpoint is unauthenticated and outside the
+     * load-shedding filter). No monitor is held during the probe.
      */
-    public static Map<String, Object> check(Probe probe, long timeoutMs, long cacheTtlMs) {
-        long now = System.currentTimeMillis();
-        Map<String, Object> cached = lastResult;
-        if (cached != null && now - lastCheckedAt < cacheTtlMs) {
-            Map<String, Object> body = new LinkedHashMap<>(cached);
+    public static Map<String, Object> check(String storage, Probe probe, long timeoutMs,
+                                            long cacheTtlMs, int maxWaiters) {
+        Cached last = LAST.get();
+        if (last != null && System.currentTimeMillis() - last.at < cacheTtlMs) {
+            Map<String, Object> body = new LinkedHashMap<>(last.result);
             body.put("cached", true);
             return body;
         }
@@ -107,9 +134,8 @@ public final class StorageReadiness {
         if (running == null && IN_FLIGHT.compareAndSet(null, mine)) {
             Map<String, Object> body;
             try {
-                body = probeOnce(probe, timeoutMs);
-                lastResult = body;
-                lastCheckedAt = System.currentTimeMillis();
+                body = probeOnce(storage, probe, timeoutMs);
+                LAST.set(new Cached(body, System.currentTimeMillis()));
             } finally {
                 IN_FLIGHT.set(null);
             }
@@ -121,7 +147,12 @@ public final class StorageReadiness {
         }
         if (running == null) {
             // The owner finished between our two reads: its result is cached
-            return check(probe, timeoutMs, cacheTtlMs);
+            return check(storage, probe, timeoutMs, cacheTtlMs, maxWaiters);
+        }
+        if (WAITERS.incrementAndGet() > maxWaiters) {
+            WAITERS.decrementAndGet();
+            return notReady(storage, "too many readiness callers waiting for the probe (" +
+                                     maxWaiters + ")");
         }
         try {
             Map<String, Object> body = new LinkedHashMap<>(
@@ -129,19 +160,22 @@ public final class StorageReadiness {
             body.put("shared", true);
             return body;
         } catch (TimeoutException e) {
-            return notReady("a probe is still running after " + timeoutMs + " ms");
+            return notReady(storage, "a probe is still running after " + timeoutMs + " ms");
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
-            return notReady("interrupted");
+            return notReady(storage, "interrupted");
         } catch (ExecutionException e) {
-            return notReady("probe failed: " + e.getCause().getClass().getSimpleName());
+            return notReady(storage, "probe failed: " +
+                                     e.getCause().getClass().getSimpleName());
+        } finally {
+            WAITERS.decrementAndGet();
         }
     }
 
-    private static Map<String, Object> probeOnce(Probe probe, long timeoutMs) {
+    private static Map<String, Object> probeOnce(String storage, Probe probe, long timeoutMs) {
         Map<String, Object> body = new LinkedHashMap<>();
         body.put("ready", false);
-        body.put("storage", BACKEND_HSTORE);
+        body.put("storage", storage);
         try {
             Map<String, Object> result = probe.probe(timeoutMs);
             body.putAll(result);
@@ -154,10 +188,10 @@ public final class StorageReadiness {
         return body;
     }
 
-    private static Map<String, Object> notReady(String reason) {
+    private static Map<String, Object> notReady(String storage, String reason) {
         Map<String, Object> body = new LinkedHashMap<>();
         body.put("ready", false);
-        body.put("storage", BACKEND_HSTORE);
+        body.put("storage", storage);
         body.put("reason", reason);
         body.put("cached", false);
         return body;
@@ -168,16 +202,16 @@ public final class StorageReadiness {
     }
 
     public static void resetCache() {
-        lastResult = null;
-        lastCheckedAt = 0L;
+        LAST.set(null);
         IN_FLIGHT.set(null);
+        WAITERS.set(0);
     }
 
-    private static HugeGraph firstHstoreGraph(GraphManager manager) {
+    private static HugeGraph firstRemoteGraph(GraphManager manager) {
         for (String name : manager.graphs()) {
             try {
                 HugeGraph graph = manager.graph(name);
-                if (graph != null && BACKEND_HSTORE.equals(graph.backend())) {
+                if (graph != null && REMOTE_BACKENDS.contains(graph.backend())) {
                     return graph;
                 }
             } catch (Throwable e) {

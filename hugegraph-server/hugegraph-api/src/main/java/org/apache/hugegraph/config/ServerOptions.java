@@ -226,6 +226,17 @@ public class ServerOptions extends OptionHolder {
                     2000
             );
 
+    public static final ConfigOption<Integer> READINESS_MAX_WAITERS =
+            new ConfigOption<>(
+                    "readiness.max_waiters",
+                    "How many GET /readiness callers may wait at once for " +
+                    "the probe already in flight; the rest get an immediate " +
+                    "503, so a burst of probes during slow storage cannot " +
+                    "hold the REST worker pool.",
+                    rangeInt(1, 10000),
+                    16
+            );
+
     public static final ConfigOption<Boolean> SERVER_USE_K8S =
             new ConfigOption<>(
                     "server.use_k8s",

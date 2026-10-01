@@ -156,6 +156,61 @@ public class StorageReadinessTest {
         }
     }
 
+    /** Beyond maxWaiters, callers get an immediate 503 instead of a worker-pool slot. */
+    @Test
+    public void testExcessWaitersAreRejectedAtOnce() throws Exception {
+        CountDownLatch started = new CountDownLatch(1);
+        CountDownLatch release = new CountDownLatch(1);
+        StorageReadiness.Probe probe = t -> {
+            started.countDown();
+            release.await(5, TimeUnit.SECONDS);
+            return result(true, "ok");
+        };
+        ExecutorService pool = Executors.newFixedThreadPool(3);
+        try {
+            Future<Map<String, Object>> owner = pool.submit(() -> {
+                return StorageReadiness.check("hstore", probe, 5000L, 0L, 1);
+            });
+            Assert.assertTrue(started.await(2, TimeUnit.SECONDS));
+            Future<Map<String, Object>> waiter = pool.submit(() -> {
+                return StorageReadiness.check("hstore", probe, 5000L, 0L, 1);
+            });
+            Thread.sleep(100L);
+            long start = System.currentTimeMillis();
+            Map<String, Object> rejected = StorageReadiness.check("hstore", probe, 5000L, 0L, 1);
+            long took = System.currentTimeMillis() - start;
+            Assert.assertFalse(StorageReadiness.isReady(rejected));
+            Assert.assertEquals("too many readiness callers waiting for the probe (1)",
+                                rejected.get("reason"));
+            Assert.assertTrue("took " + took, took < 500L);
+            release.countDown();
+            Assert.assertTrue(StorageReadiness.isReady(owner.get(2, TimeUnit.SECONDS)));
+            Map<String, Object> shared = waiter.get(2, TimeUnit.SECONDS);
+            Assert.assertTrue(StorageReadiness.isReady(shared));
+            Assert.assertEquals(true, shared.get("shared"));
+            // the slot is free again
+            Assert.assertTrue(StorageReadiness.isReady(
+                    StorageReadiness.check("hstore", t -> result(true, "ok"), 1000L, 0L, 1)));
+        } finally {
+            release.countDown();
+            pool.shutdownNow();
+        }
+    }
+
+    /** The storage name in the body is the probed backend's. */
+    @Test
+    public void testStorageNameFollowsTheBackend() {
+        Map<String, Object> body = StorageReadiness.check("hbase", t -> result(true, "ok"),
+                                                          1000L, 0L, 4);
+        Assert.assertEquals("hbase", body.get("storage"));
+        StorageReadiness.resetCache();
+        body = StorageReadiness.check("hbase", t -> {
+            throw new IllegalStateException("x");
+        }, 1000L, 0L, 4);
+        Assert.assertEquals("hbase", body.get("storage"));
+        Assert.assertFalse(StorageReadiness.isReady(body));
+    }
+
     /** A follower waits at most its own timeout for the running probe. */
     @Test
     public void testFollowerWaitIsBounded() throws Exception {
