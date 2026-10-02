@@ -26,6 +26,7 @@ import java.util.function.Consumer;
 import org.apache.commons.lang.mutable.MutableLong;
 import org.apache.hugegraph.HugeException;
 import org.apache.hugegraph.HugeGraph;
+import org.apache.hugegraph.api.graph.PropertiesDeserializer;
 import org.apache.hugegraph.core.GraphManager;
 import org.apache.hugegraph.define.Checkable;
 import org.apache.hugegraph.exception.NotFoundException;
@@ -37,7 +38,6 @@ import org.apache.hugegraph.space.Service;
 import org.apache.hugegraph.traversal.optimize.TraversalUtil;
 import org.apache.hugegraph.util.E;
 import org.apache.hugegraph.util.InsertionOrderUtil;
-import org.apache.hugegraph.util.JsonUtil;
 import org.apache.hugegraph.util.Log;
 import org.apache.tinkerpop.gremlin.process.traversal.P;
 import org.slf4j.Logger;
@@ -258,8 +258,10 @@ public class API {
 
         Map<String, Object> props = null;
         try {
-            // Exact fractions: a DECIMAL filter keeps every digit
-            props = JsonUtil.fromJsonExact(properties, Map.class);
+            // The request-body rule: exact fractions for the filter values
+            // and top-level array members (a DECIMAL filter keeps every
+            // digit), Jackson's number types inside an OBJECT value
+            props = PropertiesDeserializer.parse(properties);
         } catch (Exception ignored) {
             // ignore
         }

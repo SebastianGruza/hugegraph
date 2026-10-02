@@ -134,4 +134,24 @@ public class PropertiesDeserializerTest {
             MAPPER.readValue("{\"label\":\"x\",\"properties\":[1]}", Body.class);
         });
     }
+
+    /** The list-API filter is read by the same rule as a request body. */
+    @Test
+    public void testFilterParsesLikeABody() throws Exception {
+        Map<String, Object> filter = PropertiesDeserializer.parse(
+                "{\"amount\":12345678901234567890.123456789012345678," +
+                "\"amounts\":[1.5,2],\"meta\":{\"ratio\":0.25,\"n\":3}}");
+        Assert.assertEquals(new BigDecimal("12345678901234567890.123456789012345678"),
+                            filter.get("amount"));
+        Assert.assertEquals(new BigDecimal("1.5"), ((List<?>) filter.get("amounts")).get(0));
+        Map<?, ?> meta = (Map<?, ?>) filter.get("meta");
+        Assert.assertEquals(0.25d, meta.get("ratio"));
+        Assert.assertEquals(3, meta.get("n"));
+        Assert.assertThrows(com.fasterxml.jackson.databind.JsonMappingException.class, () -> {
+            PropertiesDeserializer.parse("[1]");
+        });
+        Assert.assertThrows(com.fasterxml.jackson.core.JsonProcessingException.class, () -> {
+            PropertiesDeserializer.parse("{\"a\":1} x");
+        });
+    }
 }

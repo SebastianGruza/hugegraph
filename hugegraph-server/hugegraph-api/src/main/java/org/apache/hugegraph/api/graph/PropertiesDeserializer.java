@@ -23,6 +23,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
+import com.fasterxml.jackson.core.JsonFactory;
 import com.fasterxml.jackson.core.JsonParser;
 import com.fasterxml.jackson.core.JsonToken;
 import com.fasterxml.jackson.databind.DeserializationContext;
@@ -39,6 +40,8 @@ import com.fasterxml.jackson.databind.JsonMappingException;
  */
 public class PropertiesDeserializer extends JsonDeserializer<Map<String, Object>> {
 
+    private static final JsonFactory FACTORY = new JsonFactory();
+
     @Override
     public Map<String, Object> deserialize(JsonParser parser,
                                            DeserializationContext ctxt)
@@ -52,6 +55,26 @@ public class PropertiesDeserializer extends JsonDeserializer<Map<String, Object>
                   "Expected an object for 'properties', but got " + token);
         }
         return readObject(parser, true);
+    }
+
+    /**
+     * The properties filter of the list APIs, read by the same rule as a
+     * request body: exact fractions for the values of the object and the
+     * members of a top-level array, Jackson's number types inside an OBJECT
+     * value, so a filter on an OBJECT key equals the stored map.
+     */
+    public static Map<String, Object> parse(String json) throws IOException {
+        try (JsonParser parser = FACTORY.createParser(json)) {
+            if (parser.nextToken() != JsonToken.START_OBJECT) {
+                throw JsonMappingException.from(parser,
+                      "Expected an object for 'properties', but got " + parser.currentToken());
+            }
+            Map<String, Object> properties = readObject(parser, true);
+            if (parser.nextToken() != null) {
+                throw JsonMappingException.from(parser, "Trailing content after 'properties'");
+            }
+            return properties;
+        }
     }
 
     /**

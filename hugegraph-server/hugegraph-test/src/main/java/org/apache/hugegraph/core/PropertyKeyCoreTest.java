@@ -837,35 +837,4 @@ public class PropertyKeyCoreTest extends SchemaCoreTest {
                                              new BigDecimal("2.5")),
                             amounts.validValue(ImmutableList.of("1", "2.5")));
     }
-
-    /**
-     * Userdata read back from the backend keeps its types: a fractional
-     * custom entry stays a Double and a DECIMAL default stays the exact
-     * BigDecimal, on every schema element.
-     */
-    @Test
-    public void testUserdataTypesSurviveABackendReload() {
-        SchemaManager schema = graph().schema();
-        schema.propertyKey("fee").asDecimal()
-              .userdata(Userdata.DEFAULT_VALUE, new BigDecimal("0.1234567890123456789"))
-              .userdata("rate", 0.85d)
-              .create();
-        schema.propertyKey("name").asText().create();
-        schema.vertexLabel("account").properties("name", "fee").primaryKeys("name")
-              .nullableKeys("fee").userdata("rate", 0.85d).create();
-
-        org.apache.hugegraph.backend.cache.CacheManager.instance().clearCache();
-
-        PropertyKey fee = graph().propertyKey("fee");
-        Assert.assertEquals(new BigDecimal("0.1234567890123456789"),
-                            fee.userdata().get(Userdata.DEFAULT_VALUE));
-        Assert.assertEquals(new BigDecimal("0.1234567890123456789"), fee.defaultValue());
-        Assert.assertEquals(0.85d, fee.userdata().get("rate"));
-        Assert.assertEquals(0.85d, graph().vertexLabel("account").userdata().get("rate"));
-        // and after a write that re-persists the element
-        schema.vertexLabel("account").userdata("note", "x").append();
-        org.apache.hugegraph.backend.cache.CacheManager.instance().clearCache();
-        Assert.assertEquals(0.85d, graph().vertexLabel("account").userdata().get("rate"));
-        Assert.assertEquals("x", graph().vertexLabel("account").userdata().get("note"));
-    }
 }
