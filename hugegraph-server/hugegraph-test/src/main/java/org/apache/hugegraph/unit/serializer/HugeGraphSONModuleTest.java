@@ -22,9 +22,18 @@ import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 
+import org.apache.hugegraph.backend.id.IdGenerator;
 import org.apache.hugegraph.io.HugeGraphIoRegistry;
+import org.apache.hugegraph.schema.PropertyKey;
+import org.apache.hugegraph.schema.VertexLabel;
+import org.apache.hugegraph.structure.HugeVertex;
 import org.apache.hugegraph.testutil.Assert;
+import org.apache.hugegraph.type.define.Cardinality;
+import org.apache.hugegraph.type.define.DataType;
+import org.apache.hugegraph.type.define.IdStrategy;
 import org.apache.hugegraph.unit.BaseUnitTest;
+import org.apache.hugegraph.unit.FakeObjects;
+import org.apache.hugegraph.util.JsonUtil;
 import org.apache.tinkerpop.gremlin.driver.message.ResponseMessage;
 import org.apache.tinkerpop.gremlin.driver.ser.GraphSONMessageSerializerV1d0;
 import org.apache.tinkerpop.gremlin.driver.ser.GraphSONMessageSerializerV2d0;
@@ -65,6 +74,30 @@ public class HugeGraphSONModuleTest extends BaseUnitTest {
         @SuppressWarnings("unchecked")
         List<Object> data = (List<Object>) message.getResult().getData();
         return data.get(0);
+    }
+
+    /**
+     * An OBJECT property holding a map: the response serializer must let the
+     * provider contextualize the Map serializer (a bare lookup has no key
+     * serializer and failed on every map value), and the numbers inside keep
+     * their JSON number types.
+     */
+    @Test
+    public void testObjectMapPropertyInVertexJson() {
+        FakeObjects objects = new FakeObjects();
+        PropertyKey name = objects.newPropertyKey(IdGenerator.of(1), "name");
+        PropertyKey meta = objects.newPropertyKey(IdGenerator.of(2), "meta",
+                                                  DataType.OBJECT, Cardinality.SINGLE);
+        VertexLabel label = objects.newVertexLabel(IdGenerator.of(1), "metas",
+                                                   IdStrategy.CUSTOMIZE_NUMBER,
+                                                   name.id(), meta.id());
+        HugeVertex vertex = new HugeVertex(objects.graph(), IdGenerator.of(1L), label);
+        vertex.addProperty(name, "m1");
+        vertex.addProperty(meta, ImmutableMap.of("ratio", 0.25, "n", 3));
+
+        String json = JsonUtil.toJson(vertex);
+        Assert.assertContains("\"meta\":{\"ratio\":0.25,\"n\":3}", json);
+        Assert.assertContains("\"name\":\"m1\"", json);
     }
 
     @Test

@@ -68,7 +68,6 @@ import org.apache.tinkerpop.shaded.jackson.core.JsonParser;
 import org.apache.tinkerpop.shaded.jackson.core.JsonToken;
 import org.apache.tinkerpop.shaded.jackson.core.type.WritableTypeId;
 import org.apache.tinkerpop.shaded.jackson.databind.DeserializationContext;
-import org.apache.tinkerpop.shaded.jackson.databind.JsonSerializer;
 import org.apache.tinkerpop.shaded.jackson.databind.SerializerProvider;
 import org.apache.tinkerpop.shaded.jackson.databind.deser.std.DateDeserializers.DateDeserializer;
 import org.apache.tinkerpop.shaded.jackson.databind.deser.std.StdDeserializer;
@@ -761,18 +760,14 @@ public class HugeGraphSONModule extends TinkerPopJacksonModule {
                 String key = property.key();
                 Object val = property.value();
                 try {
-                    generator.writeFieldName(key);
-                    if (val != null) {
-                        JsonSerializer<Object> serializer =
-                                provider.findValueSerializer(val.getClass());
-                        serializer.serialize(val, generator, provider);
-                    } else {
-                        generator.writeNull();
-                    }
+                    // The provider contextualizes the serializer: a bare
+                    // findValueSerializer() returns a Map serializer without
+                    // its key serializer, so an OBJECT map value failed here
+                    provider.defaultSerializeField(key, val, generator);
                 } catch (IOException e) {
                     throw new HugeException(
                             "Failed to serialize property(%s: %s) " +
-                            "for vertex '%s'", key, val, property.element());
+                            "for vertex '%s'", e, key, val, property.element());
                 }
             }
             // End write properties
