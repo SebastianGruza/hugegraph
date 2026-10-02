@@ -375,13 +375,24 @@ public class HstoreStorageProbeTest {
         FakeChannel gone = new FakeChannel();
         channels.put("10.0.0.1:8500", kept);
         channels.put("10.0.0.9:8500", gone);
-        HstoreStorageProbe.pruneChannels(channels, stores(1L, 2L));
+        java.util.Set<String> stale = new java.util.HashSet<>();
+        // first listing without the store: kept, a probe may still use the old list
+        HstoreStorageProbe.pruneChannels(channels, stores(1L, 2L), stale);
+        Assert.assertEquals(2, channels.size());
+        Assert.assertFalse(gone.shut);
+        Assert.assertTrue(stale.contains("10.0.0.9:8500"));
+        // the store comes back: forgotten
+        HstoreStorageProbe.pruneChannels(channels, stores(1L, 2L, 9L), stale);
+        Assert.assertFalse(stale.contains("10.0.0.9:8500"));
+        // gone twice in a row: shut down
+        HstoreStorageProbe.pruneChannels(channels, stores(1L, 2L), stale);
+        HstoreStorageProbe.pruneChannels(channels, stores(1L, 2L), stale);
         Assert.assertEquals(1, channels.size());
         Assert.assertFalse(kept.shut);
         Assert.assertTrue(gone.shut);
-        HstoreStorageProbe.pruneChannels(channels, null);
+        HstoreStorageProbe.pruneChannels(channels, null, stale);
         Assert.assertEquals("a failed listing prunes nothing", 1, channels.size());
-        HstoreStorageProbe.pruneChannels(channels, Collections.emptyList());
+        HstoreStorageProbe.pruneChannels(channels, Collections.emptyList(), stale);
         Assert.assertEquals("an empty listing keeps the channels the pings still use",
                             1, channels.size());
         Assert.assertFalse(kept.shut);

@@ -23,6 +23,7 @@ import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.Callable;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -109,27 +110,32 @@ public abstract class HbaseStore extends AbstractBackendStore<HbaseSessions.Sess
     });
 
     /**
-     * Whether the HBase cluster answers this server: one admin round trip
-     * (does the graph's first table exist) within the budget. The body
-     * carries no addresses and no raw exception text, since the readiness
-     * endpoint is unauthenticated.
+     * Whether the HBase cluster can serve this graph: one admin round trip
+     * (is the graph's first table enabled and available) within the budget.
+     * The body carries no addresses and no raw exception text, since the
+     * readiness endpoint is unauthenticated.
      */
     private Map<String, Object> storageReadiness(long timeoutMs) {
+        List<String> tables = this.tableNames();
+        String table = tables.isEmpty() ? null : tables.get(0);
+        return readinessOf(() -> table != null && this.sessions.tableAvailable(table),
+                           timeoutMs, READINESS_EXECUTOR);
+    }
+
+    /** The probe outcome of one bounded availability check; public for the unit test. */
+    public static Map<String, Object> readinessOf(Callable<Boolean> available, long timeoutMs,
+                                                  ExecutorService executor) {
         E.checkArgument(timeoutMs > 0, "The probe timeout must be > 0, but got %s", timeoutMs);
         Map<String, Object> body = new LinkedHashMap<>();
         body.put("ready", false);
-        List<String> tables = this.tableNames();
-        String table = tables.isEmpty() ? null : tables.get(0);
         long start = System.currentTimeMillis();
-        Future<Boolean> exists = READINESS_EXECUTOR.submit(() -> {
-            return table != null && this.sessions.existsTable(table);
-        });
+        Future<Boolean> check = executor.submit(available);
         try {
-            boolean ok = exists.get(timeoutMs, TimeUnit.MILLISECONDS);
+            boolean ok = check.get(timeoutMs, TimeUnit.MILLISECONDS);
             body.put("ready", ok);
-            body.put("reason", ok ? "ok" : "the graph's first table does not exist");
+            body.put("reason", ok ? "ok" : "the graph's first table is not available");
         } catch (TimeoutException e) {
-            exists.cancel(true);
+            check.cancel(true);
             body.put("reason", "hbase did not answer within " + timeoutMs + " ms");
         } catch (ExecutionException e) {
             Throwable cause = e.getCause() != null ? e.getCause() : e;
@@ -137,7 +143,7 @@ public abstract class HbaseStore extends AbstractBackendStore<HbaseSessions.Sess
             body.put("reason", "hbase failed: " + cause.getClass().getSimpleName());
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
-            exists.cancel(true);
+            check.cancel(true);
             body.put("reason", "interrupted");
         }
         body.put("hbase_millis", System.currentTimeMillis() - start);

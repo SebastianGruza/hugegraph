@@ -29,7 +29,8 @@ import jakarta.ws.rs.core.Response;
 /**
  * The readiness endpoint answers 200 on a healthy server whatever the
  * backend: "embedded" for the in-process backends of the API suite, "hstore"
- * (with the storage fields) on the hstore job.
+ * (with the Store fields) on the hstore job, "hbase" (with hbase_millis) on
+ * the hbase job.
  */
 public class ReadinessApiTest extends BaseApiTest {
 
@@ -41,15 +42,23 @@ public class ReadinessApiTest extends BaseApiTest {
         String result = assertResponseStatus(200, r);
         Map<String, Object> body = JsonUtil.fromJson(result, Map.class);
         Assert.assertEquals(true, body.get("ready"));
-        Assert.assertTrue(String.valueOf(body.get("storage")),
-                          "embedded".equals(body.get("storage")) ||
-                          "hstore".equals(body.get("storage")));
+        String storage = String.valueOf(body.get("storage"));
+        Assert.assertTrue(storage, "embedded".equals(storage) || "hstore".equals(storage) ||
+                                   "hbase".equals(storage));
         Assert.assertNotNull(body.get("reason"));
-        if ("hstore".equals(body.get("storage"))) {
+        if ("hstore".equals(storage)) {
             Assert.assertEquals("ok", body.get("reason"));
             Assert.assertTrue(((Number) body.get("active_stores")).intValue() >= 1);
             Assert.assertNotNull(body.get("answered_store"));
             Assert.assertTrue(body.containsKey("cached"));
+        }
+        if ("hbase".equals(storage)) {
+            Assert.assertEquals("ok", body.get("reason"));
+            Assert.assertTrue(((Number) body.get("hbase_millis")).longValue() >= 0L);
+            Assert.assertTrue(body.containsKey("cached"));
+        }
+        if (!"embedded".equals(storage)) {
+            Assert.assertNotNull("one entry per probed backend configuration", body.get("probes"));
         }
     }
 

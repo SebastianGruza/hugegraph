@@ -17,10 +17,10 @@
 
 package org.apache.hugegraph.unit.core;
 
-import java.util.LinkedHashMap;
-import java.util.Map;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -195,6 +195,46 @@ public class StorageReadinessTest {
             release.countDown();
             pool.shutdownNow();
         }
+    }
+
+    /** Independent backend configurations are probed side by side; one failing makes the server not ready. */
+    @Test
+    public void testEveryRemoteConfigurationIsProbed() throws Exception {
+        AtomicInteger healthy = new AtomicInteger();
+        AtomicInteger failing = new AtomicInteger();
+        List<StorageReadiness.RemoteGraph> remotes = new ArrayList<>();
+        remotes.add(new StorageReadiness.RemoteGraph("g1", "hbase", t -> {
+            healthy.incrementAndGet();
+            return result(true, "ok");
+        }));
+        remotes.add(new StorageReadiness.RemoteGraph("g2", "hbase", t -> {
+            failing.incrementAndGet();
+            return result(false, "hbase failed: IOException");
+        }));
+        Map<String, Object> body = StorageReadiness.probeAll(remotes, 1000L);
+        Assert.assertEquals(1, healthy.get());
+        Assert.assertEquals(1, failing.get());
+        Assert.assertFalse(StorageReadiness.isReady(body));
+        Assert.assertEquals("hbase of graph g2: hbase failed: IOException", body.get("reason"));
+        List<?> probes = (List<?>) body.get("probes");
+        Assert.assertEquals(2, probes.size());
+        Assert.assertEquals(false, ((Map<?, ?>) probes.get(1)).get("ready"));
+
+        // a hung configuration is bounded by the shared budget
+        remotes.add(new StorageReadiness.RemoteGraph("g3", "hstore", t -> {
+            Thread.sleep(5_000L);
+            return result(true, "ok");
+        }));
+        long start = System.currentTimeMillis();
+        body = StorageReadiness.probeAll(remotes, 300L);
+        Assert.assertTrue(System.currentTimeMillis() - start < 2_000L);
+        Assert.assertFalse(StorageReadiness.isReady(body));
+        Assert.assertEquals(3, ((List<?>) body.get("probes")).size());
+
+        // a single configuration keeps the plain body plus its one probe entry
+        body = StorageReadiness.probeAll(remotes.subList(0, 1), 1000L);
+        Assert.assertTrue(StorageReadiness.isReady(body));
+        Assert.assertEquals(1, ((List<?>) body.get("probes")).size());
     }
 
     /** The storage name in the body is the probed backend's. */
