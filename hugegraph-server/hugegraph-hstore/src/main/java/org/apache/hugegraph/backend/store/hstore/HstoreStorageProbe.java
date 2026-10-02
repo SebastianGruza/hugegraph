@@ -20,10 +20,10 @@ package org.apache.hugegraph.backend.store.hstore;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashSet;
-import java.util.Set;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionService;
 import java.util.concurrent.ConcurrentHashMap;
@@ -84,6 +84,7 @@ public final class HstoreStorageProbe {
 
     private static final KnownStores KNOWN = new KnownStores();
     private static final Map<String, ManagedChannel> CHANNELS = new ConcurrentHashMap<>();
+    private static final Set<String> STALE_CHANNELS = ConcurrentHashMap.newKeySet();
 
     private HstoreStorageProbe() {
     }
@@ -199,19 +200,20 @@ public final class HstoreStorageProbe {
         }
         return probe(KNOWN, () -> {
             List<Metapb.Store> stores = pd.getActiveStores();
-            pruneChannels(CHANNELS, stores);
+            pruneChannels(CHANNELS, stores, STALE_CHANNELS);
             return stores;
         }, HstoreStorageProbe::pingScanState, timeoutMs, EXECUTOR);
     }
 
     /**
-     * Shut down the channels of addresses PD no longer lists (replaced
-     * Stores). An empty answer is ignored, the same rule KnownStores.update
-     * applies: the pings keep using the last known Stores, so their channels
-     * must stay open.
+     * Channels of stores that left the PD list are shut down only when they
+     * are absent from two consecutive listings: a probe that snapshotted the
+     * previous store list may still be pinging them (and a stale-list ping
+     * through a closed channel would be a false not-ready, cached for the
+     * TTL). `stale` remembers the addresses missing from the last listing.
      */
     static void pruneChannels(Map<String, ManagedChannel> channels,
-                              List<Metapb.Store> stores) {
+                              List<Metapb.Store> stores, Set<String> stale) {
         if (stores == null || stores.isEmpty()) {
             return;
         }
@@ -219,11 +221,17 @@ public final class HstoreStorageProbe {
         for (Metapb.Store store : stores) {
             live.add(store.getAddress());
         }
+        stale.retainAll(channels.keySet());
         channels.entrySet().removeIf(e -> {
             if (live.contains(e.getKey())) {
+                stale.remove(e.getKey());
                 return false;
             }
+            if (stale.add(e.getKey())) {
+                return false; // first listing without it: keep for the probes in flight
+            }
             e.getValue().shutdownNow();
+            stale.remove(e.getKey());
             return true;
         });
     }
