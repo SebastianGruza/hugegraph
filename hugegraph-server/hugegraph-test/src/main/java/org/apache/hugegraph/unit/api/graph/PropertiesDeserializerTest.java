@@ -70,14 +70,28 @@ public class PropertiesDeserializerTest {
         List<?> tags = (List<?>) props.get("tags");
         Assert.assertEquals(new BigDecimal("1.5"), tags.get(0));
         Assert.assertEquals("x", tags.get(1));
-        Assert.assertEquals(new BigDecimal("2.25"), ((List<?>) tags.get(2)).get(0));
-        Assert.assertEquals(new BigDecimal("0.1"),
-                            ((Map<?, ?>) props.get("nested")).get("w"));
+        // content of an OBJECT value keeps Jackson's types: an array in an
+        // array, and a fraction inside a nested object
+        Assert.assertEquals(2.25d, ((List<?>) tags.get(2)).get(0));
+        Assert.assertEquals(0.1d, ((Map<?, ?>) props.get("nested")).get("w"));
         // key order is kept
         Assert.assertEquals("amount", props.keySet().iterator().next());
 
         // everything outside "properties" keeps Jackson's default types
         Assert.assertEquals(0.85d, body.options.get("alpha"));
+
+        // an OBJECT property with nested numbers round-trips them as numbers
+        body = MAPPER.readValue(
+                "{\"label\":\"a\",\"properties\":{\"meta\":{\"ratio\":0.25,\"n\":3," +
+                "\"inner\":{\"p\":1.5},\"list\":[0.5]},\"amounts\":[1.5,2.50]}}", Body.class);
+        Map<?, ?> meta = (Map<?, ?>) body.properties.get("meta");
+        Assert.assertEquals(0.25d, meta.get("ratio"));
+        Assert.assertEquals(3, meta.get("n"));
+        Assert.assertEquals(1.5d, ((Map<?, ?>) meta.get("inner")).get("p"));
+        Assert.assertEquals(0.5d, ((List<?>) meta.get("list")).get(0));
+        Assert.assertEquals(new BigDecimal("2.50"), ((List<?>) body.properties.get("amounts")).get(1));
+        Assert.assertEquals("{\"ratio\":0.25,\"n\":3,\"inner\":{\"p\":1.5},\"list\":[0.5]}",
+                            org.apache.hugegraph.util.JsonUtil.toJson(meta));
     }
 
     public static class KeyBody {

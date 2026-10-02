@@ -120,16 +120,6 @@ public class PropertyKey extends SchemaElement implements Propertiable {
         this.userdata().put(Userdata.DEFAULT_VALUE, this.normalizeDefaultValue(value));
     }
 
-    /**
-     * A DECIMAL key keeps its default value in userdata as the exact
-     * BigDecimal (a JSON fraction arrives as BigDecimal, a string is parsed),
-     * both when the key is defined through the API and when it is read back
-     * from the backend, so the value serializes the same way on every path.
-     * Every other data type keeps the raw value the user sent, as before:
-     * {@link #defaultValue()} converts it lazily when it is applied; only a
-     * BigDecimal (which exists solely because the API reads the default
-     * exactly) becomes the Double the default parser produced on master.
-     */
     /** A BigDecimal from the exact parser as the Double the default parser gave. */
     private static Object undoExact(Object value) {
         if (value instanceof BigDecimal) {
@@ -145,23 +135,51 @@ public class PropertyKey extends SchemaElement implements Propertiable {
         return value;
     }
 
+    /**
+     * One entry, as the backend serializers add them when a stored key is
+     * read back: an already stored DECIMAL default that does not convert
+     * keeps loading (the error surfaces when the default is applied).
+     */
     @Override
     public void userdata(String key, Object value) {
         if (Userdata.DEFAULT_VALUE.equals(key)) {
-            value = this.normalizeDefaultValue(value);
+            value = this.normalizeDefaultValue(value, true);
         }
         super.userdata(key, value);
     }
 
+    /**
+     * The userdata of a create or append through the builder: an invalid or
+     * out-of-bounds DECIMAL default is rejected here, not at the first vertex
+     * that would have used it.
+     */
     @Override
     public void userdata(Userdata userdata) {
         E.checkArgumentNotNull(userdata, "userdata");
         for (Map.Entry<String, Object> e : userdata.entrySet()) {
-            this.userdata(e.getKey(), e.getValue());
+            Object value = e.getValue();
+            if (Userdata.DEFAULT_VALUE.equals(e.getKey())) {
+                value = this.normalizeDefaultValue(value, false);
+            }
+            super.userdata(e.getKey(), value);
         }
     }
 
+    /**
+     * A DECIMAL key keeps its default value in userdata as the exact
+     * BigDecimal (a JSON fraction arrives as BigDecimal, a string is parsed),
+     * both when the key is defined through the API and when it is read back
+     * from the backend, so the value serializes the same way on every path.
+     * Every other data type keeps the raw value the user sent, as before:
+     * {@link #defaultValue()} converts it lazily when it is applied; only a
+     * BigDecimal (which exists solely because the API reads the default
+     * exactly) becomes the Double the default parser produced on master.
+     */
     private Object normalizeDefaultValue(Object value) {
+        return this.normalizeDefaultValue(value, false);
+    }
+
+    private Object normalizeDefaultValue(Object value, boolean lenient) {
         if (value == null) {
             return value;
         }
@@ -173,12 +191,13 @@ public class PropertyKey extends SchemaElement implements Propertiable {
             !(value instanceof Set)) {
             raw = new LinkedHashSet<>((Collection<?>) value);
         }
+        if (!lenient) {
+            return this.validValueOrThrow(raw);
+        }
         try {
             Object valid = this.validValue(raw);
             return valid != null ? valid : value;
         } catch (RuntimeException e) {
-            // An already stored default that does not convert keeps loading;
-            // the error surfaces when the default is applied, as before
             return value;
         }
     }

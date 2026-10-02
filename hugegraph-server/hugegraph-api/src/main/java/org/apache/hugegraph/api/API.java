@@ -224,7 +224,6 @@ public class API {
         }
     }
 
-    @SuppressWarnings("unchecked")
     /**
      * Convert each filter value to the runtime type of its property key the
      * way the traversal does (TraversalUtil.validPropertyValue, which knows
@@ -251,6 +250,7 @@ public class API {
         }
     }
 
+    @SuppressWarnings("unchecked")
     protected static Map<String, Object> parseProperties(String properties) {
         if (properties == null || properties.isEmpty()) {
             return ImmutableMap.of();

@@ -51,44 +51,56 @@ public class PropertiesDeserializer extends JsonDeserializer<Map<String, Object>
             throw JsonMappingException.from(parser,
                   "Expected an object for 'properties', but got " + token);
         }
-        return readObject(parser);
+        return readObject(parser, true);
     }
 
-    private static Map<String, Object> readObject(JsonParser parser)
+    /**
+     * `exact` holds for the values of the properties object itself and the
+     * elements of a top-level array (a DECIMAL value or a DECIMAL LIST/SET);
+     * anything nested deeper is the content of an OBJECT property and keeps
+     * Jackson's default number types.
+     */
+    private static Map<String, Object> readObject(JsonParser parser, boolean exact)
                                                   throws IOException {
         Map<String, Object> object = new LinkedHashMap<>();
         while (parser.nextToken() != JsonToken.END_OBJECT) {
             String name = parser.currentName();
             parser.nextToken();
-            object.put(name, readValue(parser));
+            object.put(name, readValue(parser, exact));
         }
         return object;
     }
 
-    private static List<Object> readArray(JsonParser parser)
+    private static List<Object> readArray(JsonParser parser, boolean exact)
                                           throws IOException {
         List<Object> array = new ArrayList<>();
         while (parser.nextToken() != JsonToken.END_ARRAY) {
-            array.add(readValue(parser));
+            array.add(readValue(parser, exact));
         }
         return array;
     }
 
     /** One value at the parser's current token: exact fractions, nested objects and arrays. */
     public static Object readValue(JsonParser parser) throws IOException {
+        return readValue(parser, true);
+    }
+
+    private static Object readValue(JsonParser parser, boolean exact) throws IOException {
         JsonToken token = parser.currentToken();
         switch (token) {
             case START_OBJECT:
-                return readObject(parser);
+                return readObject(parser, false);
             case START_ARRAY:
-                return readArray(parser);
+                // a top-level array is a LIST/SET value: its members are exact;
+                // an array inside an array or an object is OBJECT content
+                return readArray(parser, exact && !parser.getParsingContext().getParent().inArray());
             case VALUE_STRING:
                 return parser.getText();
             case VALUE_NUMBER_INT:
                 return parser.getNumberValue();
             case VALUE_NUMBER_FLOAT:
-                // Exact: the literal's digits, not the nearest double
-                return parser.getDecimalValue();
+                // Exact for a property value: the literal's digits, not the nearest double
+                return exact ? parser.getDecimalValue() : (Object) parser.getDoubleValue();
             case VALUE_TRUE:
                 return Boolean.TRUE;
             case VALUE_FALSE:

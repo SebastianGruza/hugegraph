@@ -40,6 +40,10 @@ public class ConditionTest {
                                                     Arrays.asList(new BigDecimal("1.00")));
         Assert.assertFalse(n.test(new BigDecimal("1.0")));
         Assert.assertTrue(n.test(new BigDecimal("1.1")));
+        Condition c2 = new Condition.SyspropRelation(HugeKeys.ID, Condition.RelationType.CONTAINS,
+                                                     new BigDecimal("1.0"));
+        Assert.assertTrue(c2.test(Arrays.asList(new BigDecimal("1.00"), new BigDecimal("2"))));
+        Assert.assertFalse(c2.test(Arrays.asList(new BigDecimal("1.01"))));
     }
 
     @Test

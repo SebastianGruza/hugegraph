@@ -911,7 +911,7 @@ public class TextSerializer extends AbstractSerializer {
         // Parse all user data of a schema element
         String userdataStr = entry.column(HugeKeys.USER_DATA);
         @SuppressWarnings("unchecked")
-        Map<String, Object> userdata = JsonUtil.fromJsonExact(userdataStr,
+        Map<String, Object> userdata = JsonUtil.fromJson(userdataStr,
                                                          Map.class);
         for (Map.Entry<String, Object> e : userdata.entrySet()) {
             schema.userdata(e.getKey(), e.getValue());

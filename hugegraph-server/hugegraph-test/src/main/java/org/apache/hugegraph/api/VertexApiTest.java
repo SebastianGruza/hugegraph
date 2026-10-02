@@ -325,6 +325,32 @@ public class VertexApiTest extends BaseApiTest {
         Assert.assertContains("\"~default_value\":1.5", content);
         // custom metadata keeps its type: a JSON number, not a string
         Assert.assertContains("\"rate\":0.85", content);
+        // an OBJECT property keeps the numbers inside it as numbers
+        createAndAssert(URL_PREFIX + "/schema/propertykeys",
+                        "{" +
+                        "\"name\": \"meta\"," +
+                        "\"data_type\": \"OBJECT\"," +
+                        "\"cardinality\": \"SINGLE\"," +
+                        "\"check_exist\": false," +
+                        "\"properties\":[]" +
+                        "}", 202);
+        createAndAssert(URL_PREFIX + "/schema/vertexlabels",
+                        "{" +
+                        "\"primary_keys\":[\"name\"]," +
+                        "\"id_strategy\": \"PRIMARY_KEY\"," +
+                        "\"name\": \"metas\"," +
+                        "\"properties\":[\"name\", \"meta\"]," +
+                        "\"check_exist\": false," +
+                        "\"nullable_keys\":[\"meta\"]" +
+                        "}");
+        r = client().post(PATH, "{\"label\":\"metas\",\"properties\":{\"name\":\"m1\"," +
+                                "\"meta\":{\"ratio\":0.25,\"n\":3}}}");
+        content = assertResponseStatus(201, r);
+        Assert.assertContains("\"ratio\":0.25", content);
+        r = client().get(PATH, String.format("\"%s\"", parseId(content)));
+        content = assertResponseStatus(200, r);
+        Assert.assertContains("\"ratio\":0.25", content);
+
         // a default of another type keeps the form the user sent (a DATE
         // default is converted only when it is applied, as on master)
         createAndAssert(URL_PREFIX + "/schema/propertykeys",

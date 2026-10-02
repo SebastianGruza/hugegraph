@@ -54,9 +54,25 @@ public class PropertyKeyUserdataTest {
         list.userdata(Userdata.DEFAULT_VALUE, Arrays.asList(new BigDecimal("1.5"), 2));
         Assert.assertEquals(Arrays.asList(new BigDecimal("1.5"), new BigDecimal("2")),
                             list.userdata().get(Userdata.DEFAULT_VALUE));
-        // an unconvertible default is kept raw instead of failing the load
+        // a stored default that does not convert keeps loading (per-entry path)...
         pkey.userdata(Userdata.DEFAULT_VALUE, "not-a-number");
         Assert.assertEquals("not-a-number", pkey.userdata().get(Userdata.DEFAULT_VALUE));
+        // ...but a create/append through the builder (bulk path) rejects it
+        Userdata bad = new Userdata();
+        bad.put(Userdata.DEFAULT_VALUE, "not-a-number");
+        Assert.assertThrows(IllegalArgumentException.class, () -> {
+            key(DataType.DECIMAL, Cardinality.SINGLE).userdata(bad);
+        });
+        Userdata huge = new Userdata();
+        huge.put(Userdata.DEFAULT_VALUE, new BigDecimal("1E+999999999"));
+        Assert.assertThrows(IllegalArgumentException.class, () -> {
+            key(DataType.DECIMAL, Cardinality.SINGLE).userdata(huge);
+        });
+        Userdata good = new Userdata();
+        good.put(Userdata.DEFAULT_VALUE, "0.5");
+        PropertyKey ok = key(DataType.DECIMAL, Cardinality.SINGLE);
+        ok.userdata(good);
+        Assert.assertEquals(new BigDecimal("0.5"), ok.userdata().get(Userdata.DEFAULT_VALUE));
     }
 
     @Test

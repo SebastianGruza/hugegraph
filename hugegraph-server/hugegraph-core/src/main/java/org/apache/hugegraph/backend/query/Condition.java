@@ -116,7 +116,7 @@ public abstract class Condition {
 
         CONTAINS("contains", Collection.class, null, (v1, v2) -> {
             assert v2 != null;
-            return v1 != null && ((Collection<?>) v1).contains(v2);
+            return v1 != null && collectionContains((Collection<?>) v1, v2);
         }),
 
         CONTAINS_VALUE("containsv", Map.class, null, (v1, v2) -> {
