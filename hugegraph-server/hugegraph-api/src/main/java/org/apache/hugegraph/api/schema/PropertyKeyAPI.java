@@ -240,7 +240,7 @@ public class PropertyKeyAPI extends API {
         @JsonProperty("cardinality")
         public Cardinality cardinality;
         @Schema(description = "The data type: STRING, TEXT, INT, LONG, FLOAT, " +
-                              "DOUBLE, BLOB, BOOLEAN, DATE, UUID")
+                              "DOUBLE, DECIMAL, BLOB, BOOLEAN, DATE, UUID")
         @JsonProperty("data_type")
         public DataType dataType;
         @Schema(description = "The aggregate type: NONE, SUM, MAX, MIN, SUB, " +

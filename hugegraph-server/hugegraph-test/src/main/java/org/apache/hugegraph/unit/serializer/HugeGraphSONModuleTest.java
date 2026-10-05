@@ -100,6 +100,37 @@ public class HugeGraphSONModuleTest extends BaseUnitTest {
         Assert.assertContains("\"name\":\"m1\"", json);
     }
 
+    /**
+     * The typed GraphSON v2/v3 mappers (the Gremlin server's) write scalar
+     * properties of a vertex bare, as master does: no @type/@value wrapper.
+     */
+    @Test
+    public void testScalarPropertiesAreNotTypeWrappedInGraphSONV2() throws Exception {
+        FakeObjects objects = new FakeObjects();
+        PropertyKey name = objects.newPropertyKey(IdGenerator.of(1), "name");
+        PropertyKey age = objects.newPropertyKey(IdGenerator.of(2), "age",
+                                                 DataType.INT, Cardinality.SINGLE);
+        PropertyKey score = objects.newPropertyKey(IdGenerator.of(3), "score",
+                                                   DataType.DOUBLE, Cardinality.SINGLE);
+        VertexLabel label = objects.newVertexLabel(IdGenerator.of(1), "person",
+                                                   IdStrategy.CUSTOMIZE_NUMBER,
+                                                   name.id(), age.id(), score.id());
+        HugeVertex vertex = new HugeVertex(objects.graph(), IdGenerator.of(1L), label);
+        vertex.addProperty(name, "tom");
+        vertex.addProperty(age, 29);
+        vertex.addProperty(score, 1.5d);
+        for (MessageTextSerializer<?> serializer : ImmutableList.of(
+                new GraphSONMessageSerializerV2d0(), new GraphSONMessageSerializerV3d0())) {
+            serializer.configure(CONFIG, null);
+            String json = serializer.serializeResponseAsString(response(vertex));
+            Assert.assertContains("\"age\":29", json);
+            Assert.assertContains("\"score\":1.5", json);
+            Assert.assertContains("\"name\":\"tom\"", json);
+            Assert.assertFalse(json, json.contains("\"age\":{\"@type\""));
+            Assert.assertFalse(json, json.contains("g:Int32"));
+        }
+    }
+
     @Test
     public void testBigDecimalThroughGraphSONV1() throws Exception {
         GraphSONMessageSerializerV1d0 serializer =

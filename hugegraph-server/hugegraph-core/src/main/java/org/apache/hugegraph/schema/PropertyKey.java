@@ -394,6 +394,15 @@ public class PropertyKey extends SchemaElement implements Propertiable {
         if (value == null) {
             return null;
         }
+        if (this.dataType() == DataType.OBJECT) {
+            // An OBJECT value is stored as it comes; a fraction the exact
+            // parser read as BigDecimal (a top-level scalar or a top-level
+            // array member of the request) goes back to the Double the
+            // default parser produced, so it serializes as a number
+            @SuppressWarnings("unchecked")
+            V plain = (V) undoExact(value);
+            return plain;
+        }
         if (this.checkValueType(value) && !this.dataType().isDecimal()) {
             // Same as expected type, no conversion required. A decimal is
             // not short-circuited: a ready-made BigDecimal (Gremlin literal,
@@ -423,6 +432,9 @@ public class PropertyKey extends SchemaElement implements Propertiable {
                 }
                 validValues.add(element);
             }
+            if (validValues != null && value instanceof Set && this.dataType().isDecimal()) {
+                validValues = (Collection<T>) distinctDecimals((Collection<BigDecimal>) validValues);
+            }
             validValue = (V) validValues;
         } else {
             assert this.cardinality.multiple();
@@ -432,6 +444,22 @@ public class PropertyKey extends SchemaElement implements Propertiable {
                             value.getClass().getSimpleName());
         }
         return validValue;
+    }
+
+    /**
+     * A SET of decimals has distinct values, not distinct scales: 1.0 and
+     * 1.00 are one member (the first form wins), as the conditions compare
+     * them.
+     */
+    private static Set<BigDecimal> distinctDecimals(Collection<BigDecimal> values) {
+        Set<BigDecimal> seen = new java.util.HashSet<>(values.size());
+        Set<BigDecimal> distinct = new LinkedHashSet<>(values.size());
+        for (BigDecimal v : values) {
+            if (seen.add(v.stripTrailingZeros())) {
+                distinct.add(v);
+            }
+        }
+        return distinct;
     }
 
     private <V> V convSingleValue(V value) {

@@ -260,8 +260,7 @@ public class GraphStoreIterator<T> extends AbstractSelectIterator
                 case DECIMAL:
                     // A LIST/SET value is a collection of decimals: every
                     // member in plain form, as a JSON array of strings
-                    variant.setType(VariantType.VT_STRING)
-                           .setValueString(decimalString(v));
+                    variant.mergeFrom(decimalVariant(v));
                     break;
                 case OBJECT:
                 case UNKNOWN:
@@ -281,7 +280,15 @@ public class GraphStoreIterator<T> extends AbstractSelectIterator
         return props;
     }
 
-    private static String decimalString(Object value) {
+    /** The wire form of a DECIMAL property: VT_STRING carrying {@link #decimalString}. */
+    static Graphpb.Variant decimalVariant(Object value) {
+        return Graphpb.Variant.newBuilder()
+                              .setType(VariantType.VT_STRING)
+                              .setValueString(decimalString(value))
+                              .build();
+    }
+
+    static String decimalString(Object value) {
         if (!(value instanceof Collection)) {
             return ((BigDecimal) value).toPlainString();
         }

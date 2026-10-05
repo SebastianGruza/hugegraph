@@ -350,6 +350,19 @@ public class VertexApiTest extends BaseApiTest {
         r = client().get(PATH, String.format("\"%s\"", parseId(content)));
         content = assertResponseStatus(200, r);
         Assert.assertContains("\"ratio\":0.25", content);
+        // an OBJECT scalar and an OBJECT list member stay JSON numbers too
+        r = client().post(PATH, "{\"label\":\"metas\",\"properties\":{\"name\":\"m2\"," +
+                                "\"meta\":0.25}}");
+        content = assertResponseStatus(201, r);
+        Assert.assertContains("\"meta\":0.25", content);
+        r = client().get(PATH, String.format("\"%s\"", parseId(content)));
+        Assert.assertContains("\"meta\":0.25", assertResponseStatus(200, r));
+        r = client().post(PATH, "{\"label\":\"metas\",\"properties\":{\"name\":\"m3\"," +
+                                "\"meta\":[0.25,1]}}");
+        content = assertResponseStatus(201, r);
+        Assert.assertContains("\"meta\":[0.25,1]", content);
+        r = client().get(PATH, String.format("\"%s\"", parseId(content)));
+        Assert.assertContains("\"meta\":[0.25,1]", assertResponseStatus(200, r));
 
         // a default of another type keeps the form the user sent (a DATE
         // default is converted only when it is applied, as on master)

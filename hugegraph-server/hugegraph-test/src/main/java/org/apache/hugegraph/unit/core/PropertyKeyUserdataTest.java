@@ -28,6 +28,8 @@ import org.apache.hugegraph.type.define.Cardinality;
 import org.apache.hugegraph.type.define.DataType;
 import org.junit.Test;
 
+import com.google.common.collect.ImmutableList;
+
 /**
  * Only a DECIMAL key normalizes its ~default_value eagerly; every other type
  * keeps the raw value the user sent (and an unconvertible stored default
@@ -103,5 +105,31 @@ public class PropertyKeyUserdataTest {
         Assert.assertEquals(Arrays.asList(1.5d, 2), dbls.userdata().get(Userdata.DEFAULT_VALUE));
         ints.userdata(Userdata.DEFAULT_VALUE, new BigDecimal("1.5"));
         Assert.assertEquals(1.5d, ints.userdata().get(Userdata.DEFAULT_VALUE));
+    }
+
+    /** An OBJECT key keeps Jackson's number types: a BigDecimal the exact parser read is a Double again. */
+    @Test
+    public void testObjectValuesKeepTheirNumberTypes() {
+        PropertyKey single = key(DataType.OBJECT, Cardinality.SINGLE);
+        Assert.assertEquals(0.25d, single.validValue(new BigDecimal("0.25")));
+        Assert.assertEquals(3, single.validValue(3));
+        Assert.assertEquals("x", single.validValue("x"));
+        Object list = single.validValue(ImmutableList.of(new BigDecimal("0.25"), 3));
+        Assert.assertEquals(ImmutableList.of(0.25d, 3), list);
+        PropertyKey multi = key(DataType.OBJECT, Cardinality.LIST);
+        Object members = multi.validValue(ImmutableList.of(new BigDecimal("0.25"), new BigDecimal("1.5")));
+        Assert.assertEquals(ImmutableList.of(0.25d, 1.5d), members);
+    }
+
+    /** A DECIMAL SET holds distinct values: 1.0 and 1.00 are one member, the first form kept. */
+    @Test
+    public void testDecimalSetIsDistinctByValue() {
+        PropertyKey set = key(DataType.DECIMAL, Cardinality.SET);
+        Object members = set.validValue(new java.util.LinkedHashSet<>(
+                ImmutableList.of("1.0", "1.00", "2", "2.000", "1")));
+        Assert.assertEquals(ImmutableList.of(new BigDecimal("1.0"), new BigDecimal("2")),
+                            new java.util.ArrayList<>((java.util.Set<?>) members));
+        PropertyKey list = key(DataType.DECIMAL, Cardinality.LIST);
+        Assert.assertEquals(3, ((java.util.List<?>) list.validValue(ImmutableList.of("1.0", "1.00", "1"))).size());
     }
 }

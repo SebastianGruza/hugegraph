@@ -760,10 +760,19 @@ public class HugeGraphSONModule extends TinkerPopJacksonModule {
                 String key = property.key();
                 Object val = property.value();
                 try {
-                    // The provider contextualizes the serializer: a bare
-                    // findValueSerializer() returns a Map serializer without
-                    // its key serializer, so an OBJECT map value failed here
-                    provider.defaultSerializeField(key, val, generator);
+                    // The provider contextualizes the serializer (a bare
+                    // findValueSerializer(Class) returns a Map serializer
+                    // without its key serializer, so an OBJECT map value
+                    // failed here); the value is written untyped, as on
+                    // master, so the typed GraphSON v2/v3 mappers do not
+                    // wrap every scalar property in @type/@value
+                    generator.writeFieldName(key);
+                    if (val == null) {
+                        generator.writeNull();
+                    } else {
+                        provider.findValueSerializer(val.getClass(), null)
+                                .serialize(val, generator, provider);
+                    }
                 } catch (IOException e) {
                     throw new HugeException(
                             "Failed to serialize property(%s: %s) " +

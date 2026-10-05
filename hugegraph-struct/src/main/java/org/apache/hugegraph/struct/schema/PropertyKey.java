@@ -26,6 +26,7 @@ import java.util.Collection;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.LinkedHashSet;
+import java.math.BigDecimal;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -316,6 +317,12 @@ public class PropertyKey extends SchemaElement implements Propfiable {
         if (value == null) {
             return null;
         }
+        if (this.dataType() == DataType.OBJECT) {
+            // see the core copy: an OBJECT value keeps Jackson's number types
+            @SuppressWarnings("unchecked")
+            V plain = (V) undoExact(value);
+            return plain;
+        }
         if (this.checkValueType(value) && !this.dataType().isDecimal()) {
             // Same as expected type, no conversion required. A decimal is
             // not short-circuited: a ready-made BigDecimal (Gremlin literal,
@@ -345,6 +352,9 @@ public class PropertyKey extends SchemaElement implements Propfiable {
                 }
                 validValues.add(element);
             }
+            if (validValues != null && value instanceof Set && this.dataType().isDecimal()) {
+                validValues = (Collection<T>) distinctDecimals((Collection<BigDecimal>) validValues);
+            }
             validValue = (V) validValues;
         } else {
             assert this.cardinality.multiple();
@@ -354,6 +364,33 @@ public class PropertyKey extends SchemaElement implements Propfiable {
                             value.getClass().getSimpleName());
         }
         return validValue;
+    }
+
+    /** A BigDecimal from the exact parser as the Double the default parser gave. */
+    private static Object undoExact(Object value) {
+        if (value instanceof BigDecimal) {
+            return ((BigDecimal) value).doubleValue();
+        }
+        if (value instanceof Collection) {
+            List<Object> values = new ArrayList<>(((Collection<?>) value).size());
+            for (Object member : (Collection<?>) value) {
+                values.add(undoExact(member));
+            }
+            return value instanceof Set ? new LinkedHashSet<>(values) : values;
+        }
+        return value;
+    }
+
+    /** A SET of decimals has distinct values, not distinct scales (1.0 and 1.00 are one member). */
+    private static Set<BigDecimal> distinctDecimals(Collection<BigDecimal> values) {
+        Set<BigDecimal> seen = new java.util.HashSet<>(values.size());
+        Set<BigDecimal> distinct = new LinkedHashSet<>(values.size());
+        for (BigDecimal v : values) {
+            if (seen.add(v.stripTrailingZeros())) {
+                distinct.add(v);
+            }
+        }
+        return distinct;
     }
 
     private <V> V convSingleValue(V value) {

@@ -181,4 +181,19 @@ public class PropertyKeyTest {
         Assert.assertEquals(Arrays.asList(new BigDecimal("1"),
                                           new BigDecimal("2.5")), list);
     }
+
+    @Test
+    public void testDecimalSetIsDistinctByValueAndObjectKeepsNumberTypes() {
+        PropertyKey set = new PropertyKey(null, IdGenerator.of(1), "amounts");
+        set.dataType(DataType.DECIMAL);
+        set.cardinality(Cardinality.SET);
+        Set<?> members = set.validValue(new java.util.LinkedHashSet<>(
+                Arrays.asList("1.0", "1.00", "2", "2.000")));
+        Assert.assertEquals(Arrays.asList(new BigDecimal("1.0"), new BigDecimal("2")),
+                            new java.util.ArrayList<>(members));
+        PropertyKey object = new PropertyKey(null, IdGenerator.of(2), "meta");
+        object.dataType(DataType.OBJECT);
+        Assert.assertEquals(0.25d, object.validValue(new BigDecimal("0.25")));
+        Assert.assertEquals(Arrays.asList(0.25d, 3), object.validValue(Arrays.asList(new BigDecimal("0.25"), 3)));
+    }
 }
