@@ -180,7 +180,8 @@ public class HstoreStorageProbeTest {
         HstoreStorageProbe.probe(known, () -> {
             throw new IllegalStateException("PD unreachable");
         }, ANSWERS, BUDGET, EXECUTOR);
-        for (int i = 0; i < 50 && known.pdOk() == null; i++) {
+        // the seed reports PD ok; wait for the failed refresh to land
+        for (int i = 0; i < 100 && !Boolean.FALSE.equals(known.pdOk()); i++) {
             Thread.sleep(20L);
         }
         Assert.assertEquals(Boolean.FALSE, known.pdOk());

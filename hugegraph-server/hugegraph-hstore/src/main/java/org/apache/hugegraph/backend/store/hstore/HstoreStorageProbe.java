@@ -265,6 +265,10 @@ public final class HstoreStorageProbe {
             } catch (TimeoutException e) {
                 return result(false, "no store list known and pd did not answer within " +
                                          timeoutMs + " ms", 0, null, false, -1L, -1L, 0L);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                return result(false, "interrupted while waiting for the store list",
+                                  0, null, false, -1L, -1L, 0L);
             } catch (Exception e) {
                 LOG.warn("Storage readiness: no store list known and pd failed", e);
                 return result(false, "no store list known and pd failed: " + category(e),

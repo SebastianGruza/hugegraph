@@ -110,30 +110,52 @@ public abstract class HbaseStore extends AbstractBackendStore<HbaseSessions.Sess
     });
 
     /**
-     * Whether the HBase cluster can serve this graph: one admin round trip
-     * (is the graph's first table enabled and available) within the budget.
+     * Whether the HBase cluster can serve this graph: admin round trips
+     * (is every table of the graph enabled and available) within the budget.
      * The body carries no addresses and no raw exception text, since the
      * readiness endpoint is unauthenticated.
      */
     private Map<String, Object> storageReadiness(long timeoutMs) {
         List<String> tables = this.tableNames();
-        String table = tables.isEmpty() ? null : tables.get(0);
-        return readinessOf(() -> table != null && this.sessions.tableAvailable(table),
+        return readinessOf(() -> firstUnavailable(tables, this.sessions::tableAvailable),
                            timeoutMs, READINESS_EXECUTOR);
     }
 
+    /**
+     * Every table of the graph (vertices, edges, indexes, counters) must be
+     * enabled and available: the number of the first one that is not, or 0.
+     * Checked one after another inside the probe's time budget.
+     */
+    public static int firstUnavailable(List<String> tables, TableCheck check) throws Exception {
+        if (tables.isEmpty()) {
+            return 1;
+        }
+        for (int i = 0; i < tables.size(); i++) {
+            if (!check.available(tables.get(i))) {
+                return i + 1;
+            }
+        }
+        return 0;
+    }
+
+    @FunctionalInterface
+    public interface TableCheck {
+        boolean available(String table) throws Exception;
+    }
+
     /** The probe outcome of one bounded availability check; public for the unit test. */
-    public static Map<String, Object> readinessOf(Callable<Boolean> available, long timeoutMs,
+    public static Map<String, Object> readinessOf(Callable<Integer> unavailable, long timeoutMs,
                                                   ExecutorService executor) {
         E.checkArgument(timeoutMs > 0, "The probe timeout must be > 0, but got %s", timeoutMs);
         Map<String, Object> body = new LinkedHashMap<>();
         body.put("ready", false);
         long start = System.currentTimeMillis();
-        Future<Boolean> check = executor.submit(available);
+        Future<Integer> check = executor.submit(unavailable);
         try {
-            boolean ok = check.get(timeoutMs, TimeUnit.MILLISECONDS);
+            int missing = check.get(timeoutMs, TimeUnit.MILLISECONDS);
+            boolean ok = missing == 0;
             body.put("ready", ok);
-            body.put("reason", ok ? "ok" : "the graph's first table is not available");
+            body.put("reason", ok ? "ok" : "table " + missing + " of the graph is not available");
         } catch (TimeoutException e) {
             check.cancel(true);
             body.put("reason", "hbase did not answer within " + timeoutMs + " ms");

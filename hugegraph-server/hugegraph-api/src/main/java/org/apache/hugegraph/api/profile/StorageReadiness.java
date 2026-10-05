@@ -153,13 +153,30 @@ public final class StorageReadiness {
                 if (!seen.add(key)) {
                     continue;
                 }
-                out.add(new RemoteGraph(name, graph.backend(),
-                                        t -> graph.metadata(null, STORAGE_READINESS_META, t)));
+                out.add(new RemoteGraph(name, graph.backend(), probeOf(graph)));
             } catch (Throwable e) {
                 LOG.debug("Skip graph {} while looking for remote storages", name, e);
             }
         }
         return out;
+    }
+
+    /**
+     * The probe of one graph. `metadata()` auto-opens the thread-local graph
+     * transaction (it goes through graphTransaction()), and a transaction
+     * left open on a request or probe thread makes the graph's close() fail
+     * its all-threads-closed check, so the probe closes it on the way out.
+     */
+    public static Probe probeOf(HugeGraph graph) {
+        return t -> {
+            try {
+                return graph.metadata(null, STORAGE_READINESS_META, t);
+            } finally {
+                if (graph.tx().isOpen()) {
+                    graph.tx().close();
+                }
+            }
+        };
     }
 
     private static String configKey(HugeGraph graph) {
@@ -186,14 +203,20 @@ public final class StorageReadiness {
         List<CompletableFuture<Map<String, Object>>> futures = new ArrayList<>();
         for (RemoteGraph r : remotes) {
             futures.add(CompletableFuture.supplyAsync(() -> {
-                try {
-                    return r.probe.probe(timeoutMs);
-                } catch (Exception e) {
-                    Map<String, Object> failed = new LinkedHashMap<>();
-                    failed.put("ready", false);
-                    failed.put("reason", "probe failed: " + e.getClass().getSimpleName());
-                    return failed;
-                }
+                // the auth context is a thread local of the request thread: the
+                // probe runs as the internal admin on its own thread as well
+                List<Map<String, Object>> holder = new ArrayList<>(1);
+                HugeGraphAuthProxy.runAsAdmin(() -> {
+                    try {
+                        holder.add(r.probe.probe(timeoutMs));
+                    } catch (Exception e) {
+                        Map<String, Object> failed = new LinkedHashMap<>();
+                        failed.put("ready", false);
+                        failed.put("reason", "probe failed: " + e.getClass().getSimpleName());
+                        holder.add(failed);
+                    }
+                });
+                return holder.get(0);
             }, PROBES));
         }
         List<Map<String, Object>> entries = new ArrayList<>();
@@ -218,8 +241,9 @@ public final class StorageReadiness {
             entries.add(entry);
             if (!isReady(result)) {
                 if (ready) {
-                    reason = remotes.get(i).backend + " of graph " + remotes.get(i).name + ": " +
-                             result.get("reason");
+                    // no graph name: the endpoint is unauthenticated
+                    reason = remotes.get(i).backend + " configuration " + (i + 1) + " of " +
+                             remotes.size() + ": " + result.get("reason");
                 }
                 ready = false;
             }
@@ -231,9 +255,9 @@ public final class StorageReadiness {
         return body;
     }
 
+    /** One probe in the public body: backend and outcome, no graph name (unauthenticated endpoint). */
     private static Map<String, Object> probeEntry(RemoteGraph r, Map<String, Object> result) {
         Map<String, Object> entry = new LinkedHashMap<>();
-        entry.put("graph", r.name);
         entry.put("storage", r.backend);
         entry.put("ready", isReady(result));
         entry.put("reason", result.get("reason"));

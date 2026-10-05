@@ -215,10 +215,13 @@ public class StorageReadinessTest {
         Assert.assertEquals(1, healthy.get());
         Assert.assertEquals(1, failing.get());
         Assert.assertFalse(StorageReadiness.isReady(body));
-        Assert.assertEquals("hbase of graph g2: hbase failed: IOException", body.get("reason"));
+        Assert.assertEquals("hbase configuration 2 of 2: hbase failed: IOException", body.get("reason"));
         List<?> probes = (List<?>) body.get("probes");
         Assert.assertEquals(2, probes.size());
         Assert.assertEquals(false, ((Map<?, ?>) probes.get(1)).get("ready"));
+        // the unauthenticated body carries no graph names
+        Assert.assertFalse(body.toString().contains("g2"));
+        Assert.assertNull(((Map<?, ?>) probes.get(0)).get("graph"));
 
         // a hung configuration is bounded by the shared budget
         remotes.add(new StorageReadiness.RemoteGraph("g3", "hstore", t -> {
@@ -235,6 +238,27 @@ public class StorageReadinessTest {
         body = StorageReadiness.probeAll(remotes.subList(0, 1), 1000L);
         Assert.assertTrue(StorageReadiness.isReady(body));
         Assert.assertEquals(1, ((List<?>) body.get("probes")).size());
+    }
+
+    /** Every async probe runs as the internal admin: the auth context is a thread local. */
+    @Test
+    public void testAsyncProbesCarryTheAdminContext() throws Exception {
+        List<StorageReadiness.RemoteGraph> remotes = new ArrayList<>();
+        List<String> users = java.util.Collections.synchronizedList(new ArrayList<>());
+        for (int i = 0; i < 3; i++) {
+            remotes.add(new StorageReadiness.RemoteGraph("g" + i, "hstore", t -> {
+                org.apache.hugegraph.auth.HugeGraphAuthProxy.Context ctx =
+                        org.apache.hugegraph.auth.HugeGraphAuthProxy.getContext();
+                users.add(ctx == null ? "none" : ctx.user().username());
+                return result(true, "ok");
+            }));
+        }
+        Map<String, Object> body = StorageReadiness.probeAll(remotes, 1000L);
+        Assert.assertTrue(StorageReadiness.isReady(body));
+        Assert.assertEquals(3, users.size());
+        for (String u : users) {
+            Assert.assertEquals("admin", u);
+        }
     }
 
     /** The storage name in the body is the probed backend's. */

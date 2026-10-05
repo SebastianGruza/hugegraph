@@ -17,6 +17,7 @@
 
 package org.apache.hugegraph.unit.core;
 
+import java.util.List;
 import java.util.Map;
 import java.util.concurrent.Callable;
 import java.util.concurrent.ExecutorService;
@@ -27,7 +28,9 @@ import org.apache.hugegraph.testutil.Assert;
 import org.junit.AfterClass;
 import org.junit.Test;
 
-/** The HBase probe outcome for an available, a disabled, a failing and a hung table check. */
+import com.google.common.collect.ImmutableList;
+
+/** The HBase probe outcome for available tables, one disabled table, a failing and a hung check. */
 public class HbaseReadinessTest {
 
     private static final ExecutorService EXECUTOR = Executors.newCachedThreadPool();
@@ -37,21 +40,31 @@ public class HbaseReadinessTest {
         EXECUTOR.shutdownNow();
     }
 
-    private static Map<String, Object> readiness(Callable<Boolean> check, long timeout) {
+    private static Map<String, Object> readiness(Callable<Integer> check, long timeout) {
         return HbaseStore.readinessOf(check, timeout, EXECUTOR);
     }
 
     @Test
-    public void testOutcomes() {
-        Map<String, Object> ok = readiness(() -> true, 500L);
+    public void testOutcomes() throws Exception {
+        Map<String, Object> ok = readiness(() -> 0, 500L);
         Assert.assertEquals(true, ok.get("ready"));
         Assert.assertEquals("ok", ok.get("reason"));
         Assert.assertTrue(((Number) ok.get("hbase_millis")).longValue() >= 0L);
 
-        // an existing but disabled table is not available
-        Map<String, Object> disabled = readiness(() -> false, 500L);
+        // an existing but disabled table is not available, whichever table it is
+        List<String> tables = ImmutableList.of("g_v", "g_oe", "g_ie", "g_si");
+        Map<String, Object> disabled = readiness(() -> HbaseStore.firstUnavailable(tables, t -> !t.equals("g_ie")),
+                                                 500L);
         Assert.assertEquals(false, disabled.get("ready"));
-        Assert.assertEquals("the graph's first table is not available", disabled.get("reason"));
+        Assert.assertEquals("table 3 of the graph is not available", disabled.get("reason"));
+        Assert.assertEquals(0, HbaseStore.firstUnavailable(tables, t -> true));
+        Assert.assertEquals(1, HbaseStore.firstUnavailable(ImmutableList.of(), t -> true));
+        // a throwing check surfaces as a failure, not as ready
+        Assert.assertThrows(java.io.IOException.class, () -> {
+            HbaseStore.firstUnavailable(tables, t -> {
+                throw new java.io.IOException("x");
+            });
+        });
 
         Map<String, Object> failed = readiness(() -> {
             throw new java.io.IOException("Unable to resolve host hbase-master.svc");
@@ -63,7 +76,7 @@ public class HbaseReadinessTest {
         long start = System.currentTimeMillis();
         Map<String, Object> hung = readiness(() -> {
             Thread.sleep(5_000L);
-            return true;
+            return 0;
         }, 300L);
         Assert.assertEquals(false, hung.get("ready"));
         Assert.assertEquals("hbase did not answer within 300 ms", hung.get("reason"));

@@ -59,6 +59,7 @@ public class ReadinessApiTest extends BaseApiTest {
         }
         if (!"embedded".equals(storage)) {
             Assert.assertNotNull("one entry per probed backend configuration", body.get("probes"));
+            Assert.assertFalse("no graph name on the unauthenticated endpoint", result.contains("\"graph\""));
         }
     }
 
