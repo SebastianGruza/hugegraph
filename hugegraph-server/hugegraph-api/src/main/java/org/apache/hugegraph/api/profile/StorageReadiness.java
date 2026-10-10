@@ -104,6 +104,16 @@ public final class StorageReadiness {
         List<Map<String, Object>> holder = new ArrayList<>(1);
         HugeGraphAuthProxy.runAsAdmin(() -> {
             List<RemoteGraph> remotes = remoteGraphs(manager);
+            String storage = remotes.isEmpty() ? "embedded" : remotes.stream().map(r -> r.backend).distinct()
+                                                                     .collect(Collectors.joining(","));
+            // a configured graph that did not load is not served, whatever its
+            // backend: GraphManager logs and skips it, so it is absent from the
+            // graphs looked at above and would otherwise read as "embedded"
+            int failed = manager.failedGraphs().size();
+            if (failed > 0) {
+                holder.add(failedBody(failed, storage));
+                return;
+            }
             if (remotes.isEmpty()) {
                 Map<String, Object> body = new LinkedHashMap<>();
                 body.put("ready", true);
@@ -112,11 +122,19 @@ public final class StorageReadiness {
                 holder.add(body);
                 return;
             }
-            String storage = remotes.stream().map(r -> r.backend).distinct()
-                                    .collect(Collectors.joining(","));
             holder.add(check(storage, t -> probeAll(remotes, t), timeoutMs, cacheTtlMs, maxWaiters));
         });
         return holder.get(0);
+    }
+
+    /** Not ready: `failed` configured graphs could not be loaded (no names, the endpoint is public). */
+    public static Map<String, Object> failedBody(int failed, String storage) {
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("ready", false);
+        body.put("storage", storage);
+        body.put("reason", failed + " configured graph(s) failed to load");
+        body.put("failed_graphs", failed);
+        return body;
     }
 
     /** One graph per distinct remote backend configuration, in graph order; public for the unit test. */
@@ -149,7 +167,7 @@ public final class StorageReadiness {
                 if (graph == null || !REMOTE_BACKENDS.contains(graph.backend())) {
                     continue;
                 }
-                String key = graph.backend() + "|" + configKey(graph);
+                String key = configKey(graph.backend(), graph.configuration(), graph.name());
                 if (!seen.add(key)) {
                     continue;
                 }
@@ -179,15 +197,23 @@ public final class StorageReadiness {
         };
     }
 
-    private static String configKey(HugeGraph graph) {
+    /**
+     * What makes two graphs share one probe. hstore: the PD cluster, since
+     * the probe pings the Stores PD lists. hbase: nothing, every graph is its
+     * own scope, because the HBase provider derives the table namespace from
+     * the graph name; the key still carries the full connection settings
+     * (hosts, port, znode parent) so the body's grouping is honest.
+     */
+    public static String configKey(String backend, org.apache.commons.configuration2.Configuration conf,
+                                   String graphName) {
         try {
-            if (BACKEND_HSTORE.equals(graph.backend())) {
-                return String.valueOf(graph.configuration().getString("pd.peers"));
+            if (BACKEND_HSTORE.equals(backend)) {
+                return backend + "|" + conf.getString("pd.peers");
             }
-            return graph.configuration().getString("hbase.hosts") + "/" +
-                   graph.configuration().getString("hbase.namespace");
+            return backend + "|" + conf.getString("hbase.hosts") + ":" + conf.getString("hbase.port") +
+                   conf.getString("hbase.znode_parent") + "|" + graphName;
         } catch (Throwable e) {
-            return graph.name();
+            return backend + "|" + graphName;
         }
     }
 

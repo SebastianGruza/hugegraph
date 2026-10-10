@@ -21,6 +21,7 @@ import java.io.IOException;
 import java.util.HashMap;
 import java.util.Iterator;
 import java.util.LinkedHashMap;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.Callable;
@@ -44,6 +45,8 @@ import org.apache.hugegraph.backend.store.BackendAction;
 import org.apache.hugegraph.backend.store.BackendEntry;
 import org.apache.hugegraph.backend.store.BackendFeatures;
 import org.apache.hugegraph.backend.store.BackendMutation;
+import org.apache.hugegraph.backend.store.AbstractBackendStoreProvider;
+import org.apache.hugegraph.backend.store.BackendStore;
 import org.apache.hugegraph.backend.store.BackendStoreProvider;
 import org.apache.hugegraph.backend.store.BackendTable;
 import org.apache.hugegraph.config.HugeConfig;
@@ -111,20 +114,54 @@ public abstract class HbaseStore extends AbstractBackendStore<HbaseSessions.Sess
 
     /**
      * Whether the HBase cluster can serve this graph: admin round trips
-     * (is every table of the graph enabled and available) within the budget.
-     * The body carries no addresses and no raw exception text, since the
-     * readiness endpoint is unauthenticated.
+     * (is every table of every store of the graph enabled and available)
+     * within the budget. The probe is dispatched to the graph store, so it
+     * collects the tables of the schema store (labels, property keys,
+     * counters) and of the system store from the provider as well; every
+     * store shares the graph's namespace, so this store's sessions can check
+     * them all. The body carries no addresses and no raw exception text,
+     * since the readiness endpoint is unauthenticated.
      */
     private Map<String, Object> storageReadiness(long timeoutMs) {
-        List<String> tables = this.tableNames();
+        List<String> tables = graphTables(this);
         return readinessOf(() -> firstUnavailable(tables, this.sessions::tableAvailable),
                            timeoutMs, READINESS_EXECUTOR);
     }
 
     /**
-     * Every table of the graph (vertices, edges, indexes, counters) must be
-     * enabled and available: the number of the first one that is not, or 0.
-     * Checked one after another inside the probe's time budget.
+     * The tables of every opened store of the graph, schema store first (so
+     * a disabled schema table is reported with the lowest number), without
+     * duplicates; the store's own tables when the provider has none opened.
+     */
+    static List<String> graphTables(HbaseStore self) {
+        List<BackendStore> stores = new ArrayList<>();
+        if (self.provider instanceof AbstractBackendStoreProvider) {
+            stores.addAll(((AbstractBackendStoreProvider) self.provider).openedStores());
+        }
+        List<HbaseStore> ordered = new ArrayList<>();
+        for (BackendStore store : stores) {
+            if (store instanceof HbaseSchemaStore) {
+                ordered.add(0, (HbaseStore) store);
+            } else if (store instanceof HbaseStore) {
+                ordered.add((HbaseStore) store);
+            }
+        }
+        if (ordered.isEmpty()) {
+            ordered.add(self);
+        }
+        java.util.LinkedHashSet<String> tables = new java.util.LinkedHashSet<>();
+        for (HbaseStore store : ordered) {
+            tables.addAll(store.tableNames());
+        }
+        return new ArrayList<>(tables);
+    }
+
+    /**
+     * Every table of the graph (labels, property keys and counters of the
+     * schema store; vertices, edges and indexes of the graph store; the
+     * system store's meta) must be enabled and available: the number of the
+     * first one that is not, or 0. Checked one after another inside the
+     * probe's time budget.
      */
     public static int firstUnavailable(List<String> tables, TableCheck check) throws Exception {
         if (tables.isEmpty()) {

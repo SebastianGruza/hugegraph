@@ -28,6 +28,7 @@ import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 
+import org.apache.commons.configuration2.PropertiesConfiguration;
 import org.apache.hugegraph.api.filter.AuthenticationFilter;
 import org.apache.hugegraph.api.filter.PathFilter;
 import org.apache.hugegraph.api.profile.StorageReadiness;
@@ -238,6 +239,44 @@ public class StorageReadinessTest {
         body = StorageReadiness.probeAll(remotes.subList(0, 1), 1000L);
         Assert.assertTrue(StorageReadiness.isReady(body));
         Assert.assertEquals(1, ((List<?>) body.get("probes")).size());
+    }
+
+    private static PropertiesConfiguration conf(Object... kv) {
+        PropertiesConfiguration c = new PropertiesConfiguration();
+        for (int i = 0; i + 1 < kv.length; i += 2) {
+            c.setProperty((String) kv[i], kv[i + 1]);
+        }
+        return c;
+    }
+
+    /** hbase graphs never share a probe (the namespace is per graph); hstore graphs share the PD cluster. */
+    @Test
+    public void testConfigKeys() {
+        PropertiesConfiguration a = conf("hbase.hosts", "zk1,zk2", "hbase.port", 2181, "hbase.znode_parent", "/hbase");
+        PropertiesConfiguration b = conf("hbase.hosts", "zk1,zk2", "hbase.port", 2181,
+                                         "hbase.znode_parent", "/hbase-2");
+        Assert.assertNotEquals(StorageReadiness.configKey("hbase", a, "g1"),
+                               StorageReadiness.configKey("hbase", a, "g2"));
+        Assert.assertNotEquals(StorageReadiness.configKey("hbase", a, "g1"),
+                               StorageReadiness.configKey("hbase", b, "g1"));
+        Assert.assertEquals(StorageReadiness.configKey("hbase", a, "g1"),
+                            StorageReadiness.configKey("hbase", a, "g1"));
+        PropertiesConfiguration p1 = conf("pd.peers", "pd:8686");
+        PropertiesConfiguration p2 = conf("pd.peers", "pd2:8686");
+        Assert.assertEquals(StorageReadiness.configKey("hstore", p1, "g1"),
+                            StorageReadiness.configKey("hstore", p1, "g2"));
+        Assert.assertNotEquals(StorageReadiness.configKey("hstore", p1, "g1"),
+                               StorageReadiness.configKey("hstore", p2, "g1"));
+    }
+
+    /** A configured graph that failed to load makes the server not ready, remote or not. */
+    @Test
+    public void testFailedGraphLoadIsNotReady() {
+        Map<String, Object> body = StorageReadiness.failedBody(2, "embedded");
+        Assert.assertFalse(StorageReadiness.isReady(body));
+        Assert.assertEquals("2 configured graph(s) failed to load", body.get("reason"));
+        Assert.assertEquals(2, body.get("failed_graphs"));
+        Assert.assertFalse(body.toString().contains("hugegraph"));
     }
 
     /** Every async probe runs as the internal admin: the auth context is a thread local. */

@@ -58,6 +58,12 @@ public class HbaseReadinessTest {
         Assert.assertEquals(false, disabled.get("ready"));
         Assert.assertEquals("table 3 of the graph is not available", disabled.get("reason"));
         Assert.assertEquals(0, HbaseStore.firstUnavailable(tables, t -> true));
+        // the schema store's tables and its counters come first: a disabled counters table alone
+        // is not ready, with its own number
+        List<String> all = ImmutableList.of("s_pk", "s_vl", "s_el", "s_il", "c", "g_v", "g_oe", "g_ie", "g_si", "m");
+        Assert.assertEquals(5, HbaseStore.firstUnavailable(all, t -> !t.equals("c")));
+        Assert.assertEquals(1, HbaseStore.firstUnavailable(all, t -> !t.equals("s_pk")));
+        Assert.assertEquals(0, HbaseStore.firstUnavailable(all, t -> true));
         Assert.assertEquals(1, HbaseStore.firstUnavailable(ImmutableList.of(), t -> true));
         // a throwing check surfaces as a failure, not as ready
         Assert.assertThrows(java.io.IOException.class, () -> {
